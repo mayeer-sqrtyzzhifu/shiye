@@ -25,7 +25,7 @@
 - **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
 - **网页前端 + 生命周期** —— stdlib SSE 流式、页面关掉就自动停
 
-`python -m pytest` → **221 项全绿**，单测不联网。
+`python -m pytest` → **222 项全绿**，单测不联网。
 
 > 规格文档在父目录，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -33,7 +33,7 @@
 
 ```powershell
 cd companion
-python -m pytest -p no:cacheprovider   # 221 项，不联网（不落 .pytest_cache）
+python -m pytest -p no:cacheprovider   # 222 项，不联网（不落 .pytest_cache）
 python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
@@ -250,6 +250,7 @@ python -m pytest tests/test_recall.py            # 比例常数必须仍然达�
 - 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
 - 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
 - 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
+
 
 
 
