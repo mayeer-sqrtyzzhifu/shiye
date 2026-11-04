@@ -33,15 +33,39 @@ COMPANION_BASE_URL=https://api.deepseek.com
 COMPANION_MODEL=deepseek-flash
 ```
 
-## 加密边界（重要）
+## 加密（已落地）
 
-`db.connect(path, key_hex=...)` 会**强制**走 SQLCipher：
+`db.connect(path, key_hex=...)` 走 SQLCipher（实测 4.19.0 community）：
 
-- 本机没有 `sqlcipher3` 绑定时**直接抛错，不静默降级为明文**；
-- 不传 `key_hex` 时是明文库，`security_mode()` 会报 `plaintext-dev`。
+- 加密文件里**没有明文、没有 `SQLite format 3` 头、没有 key 打不开**；
+- 没有 `sqlcipher3` 绑定时**直接抛错，不静默降级为明文**；
+- 密钥 32 字节随机值，落盘前用 **Windows DPAPI** 保护（绑当前用户）；
+- 不传 `key_hex` 时是明文库，`security_mode()` 会如实报 `plaintext-dev`。
 
-Windows 上装 SQLCipher 通常要自己编 wheel，因此 M1 允许先跑明文开发；
-**任何真实数据落盘前必须先解决加密**（规格 §9.1）。
+```powershell
+pip install sqlcipher3
+
+python tools/encrypt_db.py data/companion.db      # 明文 → 加密
+python tools/encrypt_db.py data/companion.db --verify-only
+```
+
+```python
+conn = db.connect_secure("data/companion.db")     # 自动建密钥 + DPAPI 保护
+```
+
+## 备份
+
+**不要直接拷库文件**：DPAPI 绑机器，换机打不开；WAL 下拷贝还会不一致。
+
+```python
+crypto.export_encrypted(conn, "backup/2026-11-04.db", "你的口令")
+crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new_key)
+```
+
+备份用**口令**重新加密，因此换机可用；恢复时再用本机新 key 重新加密一遍。
+
+两个 sqlcipher3 兼容性坑：Cursor 不接受 `sqlite3.Row`（要用各自的 Row）；
+它抛自己的异常类，不是 `sqlite3.OperationalError`。
 
 ## prompt cache 实测（deepseek-flash, 2026-11-04）
 
@@ -53,3 +77,4 @@ Windows 上装 SQLCipher 通常要自己编 wheel，因此 M1 允许先跑明文
 
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
+
