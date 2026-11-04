@@ -87,7 +87,8 @@ def test_recall_reaches_the_dynamic_block(conn):
     provider = FakeProvider(["嗯"])
     # 用连续短语检索：bigram 匹配不了「搬家」对「搬了一次家」这种非连续词素，
     # 那类缺口由 §1.2 的 alias 归一化补，不在检索层兜
-    result = run_turn(conn, provider, "搬了一次家", now=NOW, reference_time=REF, **BASE)
+    result = run_turn(conn, provider, "搬了一次家", now=NOW, reference_time=REF,
+                      keep_ratio_memory=0.0, **BASE)
     assert "三月初搬了一次家" in result.bundle.dynamic_block
 
 
@@ -159,5 +160,7 @@ def test_risk_injects_safety_section(conn):
     )
     assert "安全边界" in result.bundle.dynamic_block
     assert "12356" in json.dumps(provider.calls[0], ensure_ascii=False)
+
+
 
 

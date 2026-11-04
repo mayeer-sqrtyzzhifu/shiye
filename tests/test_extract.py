@@ -38,7 +38,8 @@ def test_alias_expands_query(conn):
         ("搬家", "alias", "搬了一次家", "搬家这件事"),
     )
     # 没有归一化时「搬家」匹配不到「搬了一次家」
-    hit = recall(conn, "搬家", reference_time=NOW)
+    # 只验证别名归一化这一环；阈值属于检索策略，见 test_tau_defaults_still_pass_calibration
+    hit = recall(conn, "搬家", reference_time=NOW, keep_ratio_memory=0.0)
     assert any(h.kind == "memory" for h in hit.hits)
 
 
@@ -250,3 +251,5 @@ def test_run_pending_keeps_failure_for_retry(conn):
     row = conn.execute("SELECT status, retry_count FROM async_task WHERE turn_id='t21'").fetchone()
     assert row["status"] == "failed"
     assert row["retry_count"] == 1
+
+

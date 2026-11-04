@@ -90,7 +90,8 @@ def test_event_axis_finds_interval_span(conn):
 
 def test_no_send_messages_stay_local(conn):
     seed(conn)
-    result = recall(conn, "中介坑了", reference_time=REF)
+    # 这条只验证 no_send 契约；阈值会随着 τ 标定变化，不该让它来干扰判定
+    result = recall(conn, "中介坑了", reference_time=REF, keep_ratio_message=0.0)
     assert all(not h.no_send for h in result.hits)
     assert any(h.no_send for h in result.local_only)
     assert {h.id for h in result.local_only} == {2}
@@ -137,3 +138,62 @@ def test_empty_query_returns_nothing(conn):
     result = recall(conn, "", reference_time=REF)
     assert result.hits == ()
     assert result.query.conf == 0.0
+
+def test_keep_ratio_passes_calibration():
+    """相关度比例必须仍然达标 —— 改分词器或 BM25 用法后，这里会先红。
+
+    标定集见 eval/tau_fixture.json，工具见 tools/calibrate_tau.py。
+    """
+    import json
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "tools"))
+    import calibrate_tau as cal
+
+    from companion import recall
+
+    fixture = json.loads((root / "eval" / "tau_fixture.json").read_text(encoding="utf-8"))
+    conn = cal.build_fixture_db(fixture)
+    try:
+        hits = cal.collect_hits(conn, fixture)
+    finally:
+        conn.close()
+
+    for kind, ratio in (("memory", recall.KEEP_RATIO_MEMORY),
+                        ("message", recall.KEEP_RATIO_MESSAGE)):
+        groups: dict[str, list[dict]] = {}
+        for hit in hits:
+            if hit["kind"] == kind:
+                groups.setdefault(hit["query"], []).append(hit)
+        kept, relevant_total = [], 0
+        for group in groups.values():
+            best = max(h["score"] for h in group)
+            kept.extend(h for h in group if h["score"] >= best * ratio)
+            relevant_total += sum(1 for h in group if h["relevant"])
+        kept_relevant = sum(1 for h in kept if h["relevant"])
+        precision = kept_relevant / len(kept) if kept else 1.0
+        found = kept_relevant / relevant_total if relevant_total else 1.0
+        assert precision >= 0.8, f"{kind} 精度掉到 {precision:.2f}（比例={ratio}）"
+        assert found >= 0.8, f"{kind} 召回掉到 {found:.2f}（比例={ratio}）"
+
+
+def test_keep_strong_drops_weak_hits():
+    """相对阈值的语义：低于最强命中的一半就丢掉。"""
+    from companion.recall import _keep_strong
+
+    assert _keep_strong([], 0.5) == []
+    assert _keep_strong([(1, 4.0), (2, 1.0)], 0.5) == [(1, 4.0)]
+    assert _keep_strong([(1, 4.0), (2, 2.5)], 0.5) == [(1, 4.0), (2, 2.5)]
+    # 0 表示不过滤
+    assert _keep_strong([(1, 4.0), (2, 0.1)], 0.0) == [(1, 4.0), (2, 0.1)]
+
+
+def test_keep_ratio_is_sane():
+    """0 等于不筛，1 等于只留最强那条；都不该是默认。"""
+    from companion import recall
+
+    for ratio in (recall.KEEP_RATIO_MEMORY, recall.KEEP_RATIO_MESSAGE):
+        assert 0 < ratio < 1
+

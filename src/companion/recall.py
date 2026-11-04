@@ -26,6 +26,18 @@ from .datewin import overlaps_sql
 from .timequery import CONF_MID, TimeQuery, resolve
 
 TIER0_LIMIT = 2
+
+# 相关性下限。**用相对比例，不用绝对分。**
+#
+# 最初标定的是绝对阈值（τ=2.5），在 34 篇语料上精度 0.88 / 召回 1.00。
+# 但搬到评估集（只有几篇文档）就废了：BM25 的分数依赖语料规模和 IDF，
+# 同一对文本在不同规模的库里分差可以到几倍。绝对阈值等于把语料规模
+# 焊进了业务逻辑。
+#
+# 改成"保留最高分的 KEEP_RATIO 以上"：与语料规模无关，只表达
+# "这条命中的强度够不够格跟最强的候选并列"。标定见 tools/calibrate_tau.py。
+KEEP_RATIO_MEMORY = 0.5
+KEEP_RATIO_MESSAGE = 0.5
 TEXT_LIMIT_MEMORY = 3
 TEXT_LIMIT_MESSAGE = 1
 TOTAL_LIMIT = 5
@@ -107,6 +119,20 @@ def _message_hits(conn: sqlite3.Connection, q: TimeQuery) -> list[Hit]:
 
 # ───────────────────────────────────────── 组装
 
+def _keep_strong(hits: list[tuple[int, float]], ratio: float) -> list[tuple[int, float]]:
+    """只保留接近最强命中的那些。
+
+    相对阈值而不是绝对分：BM25 的绝对值随语料规模浮动，写死会把
+    "语料多大"焊进业务逻辑。ratio=0 表示不过滤。
+    """
+    if not hits:
+        return []
+    best = max(score for _, score in hits)
+    if ratio <= 0 or best <= 0:
+        return list(hits)
+    return [(i, s) for i, s in hits if s >= best * ratio]
+
+
 def _no_send_map(conn: sqlite3.Connection, ids: list[int]) -> dict[int, bool]:
     if not ids:
         return {}
@@ -123,8 +149,8 @@ def recall(
     *,
     reference_time=None,
     profile: dict[str, str] | None = None,
-    tau_memory: float = 0.0,
-    tau_message: float = 0.0,
+    keep_ratio_memory: float = KEEP_RATIO_MEMORY,
+    keep_ratio_message: float = KEEP_RATIO_MESSAGE,
 ) -> RecallResult:
     """Run the three candidate paths and fuse them under the §3.5 quotas."""
     if profile is None:
@@ -146,23 +172,28 @@ def recall(
     taken_memory = {h.id for h in tier0 if h.kind == "memory"}
     taken_message = {h.id for h in tier0 if h.kind == "message"}
 
-    memory_text = [
-        Hit("memory", i, 1, s, "fts_memory")
+    memory_raw = [
+        (i, s)
         for i, s in db.search_memories(
-            conn, query_text, min_relevance=tau_memory,
+            conn, query_text, min_relevance=0.0,
             limit=TEXT_LIMIT_MEMORY + len(taken_memory),
         )
         if i not in taken_memory
+    ]
+    memory_text = [
+        Hit("memory", i, 1, s, "fts_memory")
+        for i, s in _keep_strong(memory_raw, keep_ratio_memory)
     ][:TEXT_LIMIT_MEMORY]
 
-    message_scored = [
+    message_raw = [
         (i, s)
         for i, s in db.search_messages(
-            conn, query_text, min_relevance=tau_message,
+            conn, query_text, min_relevance=0.0,
             limit=TEXT_LIMIT_MESSAGE + len(taken_message),
         )
         if i not in taken_message
-    ][:TEXT_LIMIT_MESSAGE]
+    ]
+    message_scored = _keep_strong(message_raw, keep_ratio_message)[:TEXT_LIMIT_MESSAGE]
     flags = _no_send_map(conn, [i for i, _ in message_scored])
     message_text = [
         Hit("message", i, 1, s, "fts_message", flags.get(i, False))
@@ -186,3 +217,6 @@ def recall(
                "message": message_slots, "local_only": len(local_only),
                "lexicon": len(lexicon_matches)},
     )
+
+
+

@@ -165,6 +165,8 @@ def run_turn(
     gap_hint: str | None = None,
     max_tokens: int = 800,
     temperature: float = 0.8,
+    keep_ratio_memory: float | None = None,
+    keep_ratio_message: float | None = None,
     on_text: Callable[[str], None] | None = None,
     persist: bool = True,
 ) -> TurnResult:
@@ -191,7 +193,15 @@ def run_turn(
     day_start, day_end = local_day_bounds(now, tz_name)
     session = _load_session(conn, session_id)
 
-    recalled = recall(conn, text, reference_time=reference_time, profile=profile)
+    # 相关度比例由 recall 的默认值提供；显式传入便于测试和调试
+    tau_kwargs = {}
+    if keep_ratio_memory is not None:
+        tau_kwargs["keep_ratio_memory"] = keep_ratio_memory
+    if keep_ratio_message is not None:
+        tau_kwargs["keep_ratio_message"] = keep_ratio_message
+    recalled = recall(
+        conn, text, reference_time=reference_time, profile=profile, **tau_kwargs
+    )
     recall_lines = _materialize_recall(conn, recalled, tz_name)
     turns = _recent_turns(conn, day_start, day_end)
 
@@ -272,6 +282,8 @@ def run_turn(
         signals=signals,
         notes=notes,
     )
+
+
 
 
 
