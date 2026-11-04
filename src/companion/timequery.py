@@ -224,10 +224,42 @@ def _year_offset(word: str, ref: date) -> int:
 
 # ───────────────────────────────────────── 组合
 
+def _resolve_birthday(text: str, ref: date, profile: dict[str, str] | None):
+    """「生日」类表达。没有档案就不猜 —— 只回落到年度粗窗口（§3.4 硬规则 2）。"""
+    if not profile or "生日" not in text:
+        return None
+    md = profile.get("birthday")
+    if not md or len(md) < 5:
+        return None
+    try:
+        month, day = int(md[0:2]), int(md[3:5])
+    except ValueError:
+        return None
+
+    year_word = next((w for w in ("去年", "前年", "今年", "明年") if w in text), None)
+    if year_word:
+        try:
+            anchor = date(_year_offset(year_word, ref), month, day)
+        except ValueError:
+            return None
+        return _expand(anchor, 0.9, days=3), 0.9, "birthday", f"{year_word}生日"
+
+    candidates = _year_candidates(month, day, ref)
+    if not candidates:
+        return None
+    windows = [TimeWindow(_iso(c), _iso(c), 0.8, "candidate") for c in candidates]
+    windows.append(
+        _span(min(candidates) - timedelta(days=3),
+              max(candidates) + timedelta(days=3), 0.72, "expanded")
+    )
+    return windows, 0.8, "birthday", "生日"
+
+
 def resolve(
     text: str,
     *,
     reference_time: datetime | str | None = None,
+    profile: dict[str, str] | None = None,
 ) -> TimeQuery:
     """Parse one user utterance into a TimeQuery.
 
@@ -265,7 +297,14 @@ def resolve(
             except ValueError:
                 pass
 
-    # 2) 相对表达（含"去年这个时候"、N 天前、上周三等）
+    # 2) 档案里能解析的专属日期（生日）。必须在相对/年份规则之前，
+    #    否则「去年生日」会被"去年"抢走，降级成年度粗窗口。
+    birthday = _resolve_birthday(text, ref, profile)
+    if birthday:
+        windows, conf, matched, raw = birthday
+        return build(windows, conf, matched, raw)
+
+    # 3) 相对表达（含"去年这个时候"、N 天前、上周三等）
     relative = _resolve_relative(text, ref)
     if relative:
         windows, conf, matched, raw = relative
@@ -273,7 +312,7 @@ def resolve(
             return build([], conf, matched, raw)
         return build(windows, conf, matched, raw)
 
-    # 3) 只有月日：年份是真歧义，两个候选都交出
+    # 4) 只有月日：年份是真歧义，两个候选都交出
     m = _RE_MD.search(text)
     if m:
         mo, d = _cn_int(m.group(1)), _cn_int(m.group(2))
@@ -289,7 +328,7 @@ def resolve(
                 windows.append(_span(lo, hi, 0.585, "expanded"))
                 return build(windows, 0.65, "month_day", m.group(0))
 
-    # 4) 只有月份：粗窗口
+    # 5) 只有月份：粗窗口
     m = _RE_MONTH.search(text)
     if m:
         mo = _cn_int(m.group(1))
@@ -298,18 +337,18 @@ def resolve(
             hi = date(ref.year + (mo == 12), 12 if mo == 12 else mo + 1, 1) - timedelta(days=1)
             return build([_span(lo, hi, 0.55, "coarse")], 0.55, "month_only", m.group(0))
 
-    # 5) 只有年份
+    # 6) 只有年份
     m = _RE_BARE_YEAR.search(text)
     if m:
         year = _year_offset(m.group(1), ref)
         return build(_coarse(date(year, 6, 1), 0.5), 0.5, "year_only", m.group(0))
 
-    # 6) 模糊指代兜底：能指到"某一段/某一件事"，指不到具体日期
+    # 7) 模糊指代兜底：能指到"某一段/某一件事"，指不到具体日期
     m = _RE_VAGUE.search(text)
     if m:
         return build([], 0.2, "vague", m.group(0))
 
-    # 7) 什么都没解析出来
+    # 8) 什么都没解析出来
     return build([], 0.0, None, text)
 
 
@@ -317,12 +356,13 @@ def resolve_interval(
     text: str,
     *,
     reference_time: datetime | str | None = None,
+    profile: dict[str, str] | None = None,
 ) -> TimeQuery:
     """区间表达（"3月1号到3月10号""那阵子"）→ 一个覆盖两端的窗口。"""
     parts = re.split(r"\s*(?:到|至|~|—|–)\s*", (text or "").strip())
     if len(parts) == 2 and all(parts):
-        left = resolve(parts[0], reference_time=reference_time)
-        right = resolve(parts[1], reference_time=reference_time)
+        left = resolve(parts[0], reference_time=reference_time, profile=profile)
+        right = resolve(parts[1], reference_time=reference_time, profile=profile)
         if left.exact and right.exact:
             lo, hi = sorted((left.exact.start, right.exact.end))
             conf = min(left.conf, right.conf) * 0.95

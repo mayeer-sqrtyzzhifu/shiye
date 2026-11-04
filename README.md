@@ -6,8 +6,9 @@
 
 - **M1 数据底座** —— §8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索
 - **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
+- **M2 之 L1 召回** —— 三路候选（日期 / 记忆文本 / 原文）、配额预留、`no_send` 全路径隔离、档案生日
 
-`python -m pytest` → **34 项全绿**，无需安装任何依赖。
+`python -m pytest` → **46 项全绿**，无需安装任何依赖。
 
 > 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -41,15 +42,33 @@ Windows 上装 SQLCipher 通常要自己编 wheel，因此 M1 允许先跑明文
 
 ```
 schema/001_init.sql     全部 DDL（可执行、已在 sqlite 3.51 验证）
+schema/002_profile.sql  长期档案槽位（birthday / calendar / name / timezone）
 src/companion/
-  db.py                 连接 / PRAGMA / schema / FTS 同步 wrapper / 最小检索
+  db.py                 连接 / PRAGMA / 迁移 / FTS 同步 wrapper / 文本检索
   fts.py                CJK 分词（索引侧 unigram+bigram，查询侧 bigram）
   datewin.py            区间相交 与 跨年周年窗口（规格里最容易写错的两段 SQL）
   timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
+  recall.py             L1 三路召回与配额融合
 tests/
   test_schema.py        10 项：DDL / 检索方向 / 索引语义
   test_timequery.py     24 项：时间解析规则
+  test_recall.py        12 项：三路融合、配额、no_send、档案生日
 ```
+
+## L1 召回
+
+```python
+from companion.recall import recall
+r = recall(conn, "昨天我们聊了什么", reference_time="2026-11-04T09:00:00Z")
+r.query.axis          # "message"
+[(h.source, h.id) for h in r.hits]        # [("date_message", 1)]
+[h.id for h in r.local_only]              # no_send 的命中只在这里，不进上下文
+r.notes                                   # {"tier0": 1, "memory": 0, ...}
+```
+
+配额：`tier0 ≤ 2 / 记忆文本 ≤ 3 / 原文 ≤ 1`，总量 ≤5。**原文那 1 个位置先预留**——
+否则 tier0 和记忆文本会把 5 个位置吃光，原文路永远命中不到（这解决了
+"三路 2/3/1 相加是 6、截到 5 会随机挤掉一路"的问题）。
 
 ## `query_time_resolver` 的行为
 

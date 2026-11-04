@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,13 @@ try:  # pragma: no cover - 取决于本机是否装了 SQLCipher
 except ImportError:  # pragma: no cover
     _sqlcipher = None
 
-SCHEMA_FILE = Path(__file__).resolve().parents[2] / "schema" / "001_init.sql"
+MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "schema"
+SCHEMA_FILE = MIGRATIONS_DIR / "001_init.sql"
+
+
+def migratons() -> list[Path]:
+    """按 001 / 002 … 顺序返回迁移文件。"""
+    return sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
 
 
 def sqlcipher_available() -> bool:
@@ -64,8 +71,36 @@ def connect(path: str | Path, key_hex: str | None = None) -> sqlite3.Connection:
     return conn
 
 
-def apply_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
+def migrations() -> list[Path]:
+    """按 001 / 002 … 顺序返回迁移文件。"""
+    return sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+        ).fetchone()
+    except sqlite3.OperationalError:  # schema_meta 还不存在
+        return 0
+    return int(row["value"]) if row else 0
+
+
+def apply_schema(conn: sqlite3.Connection) -> int:
+    """Apply pending migrations in order; returns the resulting version.
+
+    不允许原地改已发布的迁移文件 —— 变更一律新增 ``NNN_*.sql``（§16.5）。
+    """
+    for path in migrations():
+        version = int(path.name.split("_", 1)[0])
+        if version <= schema_version(conn):
+            continue
+        conn.executescript(path.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+            (str(version),),
+        )
+    return schema_version(conn)
 
 
 def integrity_report(conn: sqlite3.Connection) -> dict[str, list[str]]:
@@ -129,6 +164,7 @@ def search_memories(
     conn: sqlite3.Connection,
     query: str,
     *,
+    user_id: int = 1,
     min_relevance: float = 0.0,
     limit: int = 20,
 ) -> list[tuple[int, float]]:
@@ -145,12 +181,13 @@ def search_memories(
         FROM memories_fts
         JOIN memory_items m ON m.id = memories_fts.rowid
         WHERE memories_fts.tok MATCH ?
+          AND m.user_id = ?
           AND m.status = 'active'
           AND m.superseded_by IS NULL
         ORDER BY relevance DESC
         LIMIT ?
         """,
-        (expr, limit),
+        (expr, user_id, limit),
     ).fetchall()
     return [(r["id"], r["relevance"]) for r in rows if r["relevance"] >= min_relevance]
 
@@ -159,6 +196,7 @@ def search_messages(
     conn: sqlite3.Connection,
     query: str,
     *,
+    user_id: int = 1,
     min_relevance: float = 0.0,
     limit: int = 20,
 ) -> list[tuple[int, float]]:
@@ -170,10 +208,40 @@ def search_messages(
         """
         SELECT messages_fts.rowid AS id, -bm25(messages_fts) AS relevance
         FROM messages_fts
+        JOIN messages msg ON msg.id = messages_fts.rowid
         WHERE messages_fts.tok MATCH ?
+          AND msg.user_id = ?
         ORDER BY relevance DESC
         LIMIT ?
         """,
-        (expr, limit),
+        (expr, user_id, limit),
     ).fetchall()
     return [(r["id"], r["relevance"]) for r in rows if r["relevance"] >= min_relevance]
+
+
+# ───────────────────────────────────────── 档案槽位
+
+def get_profile(conn: sqlite3.Connection) -> dict[str, str]:
+    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM profile")}
+
+
+def set_profile(
+    conn: sqlite3.Connection,
+    key: str,
+    value: str,
+    *,
+    evidence_message_ids: list[int] | None = None,
+) -> None:
+    """档案只接受白名单槽位；写入必须带证据（§2.3 的同一原则）。"""
+    if key not in _PROFILE_SLOTS:
+        raise ValueError(f"unknown profile slot: {key}")
+    conn.execute(
+        "INSERT INTO profile (key, value, evidence_message_ids, updated_at) "
+        "VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET "
+        "value=excluded.value, evidence_message_ids=excluded.evidence_message_ids, "
+        "updated_at=excluded.updated_at",
+        (key, value, json.dumps(evidence_message_ids or []), utc_now()),
+    )
+
+
+_PROFILE_SLOTS = {"birthday", "calendar", "name", "timezone"}
