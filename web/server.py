@@ -23,6 +23,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,29 +96,45 @@ class App:
     def connect(self):
         return db.connect_secure(self.db_path, key_file=self.key_path)
 
-    def sessions(self, limit: int = 200) -> list[dict]:
-        """按会话聚合，供左侧日期栏使用。时间转成本地日期。"""
+    def days(self, limit: int = 180) -> list[dict]:
+        """按**本地自然日**聚合。一天就是一段对话，不再往下分 session。"""
         conn = self.connect()
         try:
             tz_name = db.get_profile(conn).get("timezone")
             rows = conn.execute(
-                """
-                WITH last_user AS (
-                    SELECT session_id, content,
-                           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) rn
-                    FROM messages WHERE role = 'user'
-                ),
-                agg AS (
-                    SELECT session_id, count(*) AS n,
-                           min(message_time) AS first_at, max(message_time) AS last_at
-                    FROM messages GROUP BY session_id
-                )
-                SELECT agg.session_id, agg.n, agg.last_at, lu.content AS preview
-                FROM agg LEFT JOIN last_user lu
-                  ON lu.session_id = agg.session_id AND lu.rn = 1
-                ORDER BY agg.last_at DESC
-                LIMIT ?
-                """,
+                "SELECT role, content, message_time FROM messages ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        buckets: dict[str, dict] = {}
+        for row in rows:
+            local = local_datetime(row["message_time"], tz_name)
+            if local is None:
+                continue
+            day = local.strftime("%Y-%m-%d")
+            bucket = buckets.setdefault(
+                day, {"day": day, "turns": 0, "messages": 0,
+                      "preview": "", "first": "", "last": ""}
+            )
+            bucket["messages"] += 1
+            stamp = local.strftime("%H:%M")
+            bucket["first"] = bucket["first"] or stamp
+            bucket["last"] = stamp
+            if row["role"] == "user":
+                bucket["turns"] += 1
+                bucket["preview"] = " ".join((row["content"] or "").split())[:48]
+
+        return sorted(buckets.values(), key=lambda b: b["day"], reverse=True)[:limit]
+
+    def history(self, days: list[str], limit: int = 3000) -> list[dict]:
+        """把若干天的对话合并成一条时间线。"""
+        wanted = set(days)
+        conn = self.connect()
+        try:
+            tz_name = db.get_profile(conn).get("timezone")
+            rows = conn.execute(
+                "SELECT id, role, content, message_time FROM messages ORDER BY id LIMIT ?",
                 (limit,),
             ).fetchall()
         finally:
@@ -125,34 +142,59 @@ class App:
 
         out = []
         for row in rows:
-            local = local_datetime(row["last_at"], tz_name)
+            local = local_datetime(row["message_time"], tz_name)
+            if local is None:
+                continue
+            day = local.strftime("%Y-%m-%d")
+            if wanted and day not in wanted:
+                continue
             out.append({
-                "session_id": row["session_id"] or "legacy",
-                "day": local.strftime("%Y-%m-%d") if local else (row["last_at"] or "")[:10],
-                "time": local.strftime("%H:%M") if local else "",
-                "turns": max(1, row["n"] // 2),
-                "preview": " ".join((row["preview"] or "").split())[:48],
+                "id": row["id"],
+                "role": row["role"],
+                "text": row["content"],
+                "day": day,
+                "at": local.strftime("%H:%M"),
             })
         return out
 
-    def history(self, session: str, limit: int = 400) -> list[dict]:
-        if not session:
-            return []
+    def delete_messages(self, days: list[str], message_ids: list[int]) -> dict:
+        """删掉指定的消息，或整天的消息。返回删除条数与索引状态。"""
         conn = self.connect()
         try:
             tz_name = db.get_profile(conn).get("timezone")
-            rows = conn.execute(
-                "SELECT role, content, message_time FROM messages "
-                "WHERE session_id = ? ORDER BY id LIMIT ?",
-                (session, limit),
-            ).fetchall()
+            targets = {int(i) for i in message_ids}
+            if days:
+                wanted = set(days)
+                for row in conn.execute("SELECT id, message_time FROM messages"):
+                    local = local_datetime(row["message_time"], tz_name)
+                    if local and local.strftime("%Y-%m-%d") in wanted:
+                        targets.add(int(row["id"]))
+            if not targets:
+                return {"deleted": 0, "fts_ok": db.verify_fts(conn).ok}
+
+            ids = sorted(targets)
+            cluster = f"msg-{uuid4().hex[:10]}"
+            now = db.utc_now()
+            with db.tx(conn):
+                for start in range(0, len(ids), 400):
+                    part = ids[start : start + 400]
+                    marks = ", ".join("?" * len(part))
+                    conn.execute(f"DELETE FROM messages WHERE id IN ({marks})", part)
+                db.delete_message_fts(conn, ids)
+                for message_id in ids:
+                    conn.execute(
+                        "INSERT INTO deletion_target (cluster_id, target_kind, target_id, deleted_at) "
+                        "VALUES (?, 'message', ?, ?)",
+                        (cluster, str(message_id), now),
+                    )
+                conn.execute(
+                    "UPDATE data_revision SET revision = revision + 1, updated_at = ? WHERE id = 1",
+                    (now,),
+                )
+            report = db.verify_fts(conn)
+            return {"deleted": len(ids), "fts_ok": report.ok}
         finally:
             conn.close()
-        return [
-            {"role": r["role"], "text": r["content"],
-             "at": format_local_moment(r["message_time"], tz_name)}
-            for r in rows
-        ]
 
     def provider(self):
         with self._provider_lock:
@@ -216,12 +258,14 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
 
-        if route == "/api/sessions":
-            self._json(self.app.sessions())
+        if route == "/api/days":
+            self._json(self.app.days())
             return
 
         if route == "/api/history":
-            self._json(self.app.history(query.get("session", "")))
+            raw = query.get("days", "")
+            days = [d for d in (x.strip() for x in raw.split(",")) if d]
+            self._json(self.app.history(days))
             return
 
         if route == "/api/health":
@@ -268,6 +312,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "pages": remaining, "stop_in": stop_in})
             return
 
+        if route == "/api/delete":
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, status=400)
+                return
+            days = [str(d) for d in (body.get("days") or [])]
+            ids = [int(i) for i in (body.get("message_ids") or []) if str(i).isdigit()]
+            if not days and not ids:
+                self._json({"error": "nothing to delete"}, status=400)
+                return
+            result = self.app.delete_messages(days, ids)
+            print(f"[delete] days={days} ids={ids} -> {result}")
+            self._json(result)
+            return
+
         if route != "/api/chat":
             self._json({"error": "not found"}, status=404)
             return
@@ -308,11 +369,11 @@ class Handler(BaseHTTPRequestHandler):
                     disconnected = True
 
             with self.app.write_lock:
+                # 会话单位是"天"：不传 session_id，由 run_turn 按本地日期决定
                 result = run_turn(
                     conn, self.app.provider(), text,
                     persona=PERSONA,
                     boundaries=BOUNDARIES,
-                    session_id=session_id,
                     on_text=on_text,
                 )
 
@@ -458,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

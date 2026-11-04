@@ -25,7 +25,9 @@ from . import lexicon as lex_mod
 from . import signals as sig_mod
 from .prompt import (
     LexiconLine,
+    day_key,
     format_local_moment,
+    local_day_bounds,
     PromptBundle,
     RecallLine,
     Turn,
@@ -89,18 +91,22 @@ def _materialize_recall(
 
 
 def _recent_turns(
-    conn: sqlite3.Connection, session_id: str, limit: int = RECENT_LIMIT
+    conn: sqlite3.Connection,
+    start_utc: str,
+    end_utc: str,
+    limit: int = RECENT_LIMIT,
 ) -> tuple[Turn, ...]:
-    """近期对话，**按会话隔离**，并排除 no_send（§9.2）。
+    """当天（本地自然日）的近期对话，并排除 no_send（§9.2）。
 
-    没有会话过滤时，网页每次刷新生成的新 session 仍会看到上一次的内容，
-    表现为"你刚才不是说过吗"——这是真实踩到过的错乱。
+    会话单位是**天**而不是 session_id：同一天里刷新过几次页面、旧数据带着
+    随机 session_id，都应该被当成同一段对话。
     """
     rows = conn.execute(
         "SELECT role, content FROM messages "
-        "WHERE role IN ('user','assistant') AND no_send = 0 AND session_id = ? "
+        "WHERE role IN ('user','assistant') AND no_send = 0 "
+        "  AND message_time >= ? AND message_time < ? "
         "ORDER BY id DESC LIMIT ?",
-        (session_id, limit),
+        (start_utc, end_utc, limit),
     ).fetchall()
     return tuple(Turn(r["role"], r["content"]) for r in reversed(rows))
 
@@ -147,7 +153,7 @@ def run_turn(
     text: str,
     *,
     persona: str,
-    session_id: str = "default",
+    session_id: str | None = None,
     now: datetime | None = None,
     reference_time: str | None = None,
     boundaries: tuple[str, ...] = (),
@@ -178,11 +184,15 @@ def run_turn(
         resources = DEFAULT_CRISIS_RESOURCES
 
     profile = db.get_profile(conn)
+    tz_name = profile.get("timezone")
+    # 会话单位是"天"：session_id 默认就是当天，刷新/重开都回到同一段
+    session_id = session_id or f"day:{day_key(now, tz_name)}"
+    day_start, day_end = local_day_bounds(now, tz_name)
     session = _load_session(conn, session_id)
 
     recalled = recall(conn, text, reference_time=reference_time, profile=profile)
-    recall_lines = _materialize_recall(conn, recalled, profile.get("timezone"))
-    turns = _recent_turns(conn, session_id)
+    recall_lines = _materialize_recall(conn, recalled, tz_name)
+    turns = _recent_turns(conn, day_start, day_end)
 
     # 命中的语汇进动态段；调用方显式传入时以调用方为准（便于测试/手工注入）
     matched_lexicon = tuple(
@@ -260,5 +270,6 @@ def run_turn(
         signals=signals,
         notes=notes,
     )
+
 
 

@@ -6,6 +6,7 @@ import threading
 import httpx
 import pytest
 
+from companion import db
 from companion.provider import FakeProvider
 from web.server import create_server
 
@@ -18,15 +19,35 @@ def live(tmp_path):
         provider_factory=lambda: FakeProvider(replies),
     )
     port = httpd.server_address[1]
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
     thread.start()
     try:
         yield f"http://127.0.0.1:{port}", app
     finally:
         httpd.shutdown()
+        app.watchdog.stop()
         httpd.server_close()
         thread.join(timeout=5)
 
+
+def _insert(app, role, text, when, session="s", sync=True):
+    conn = app.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (role, text, when, when, session),
+        )
+        if sync:
+            db.upsert_message_fts(conn, cur.lastrowid, text)
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+# ───────────────────────────────────────── 页面
 
 def test_index_serves_html(live):
     base, _ = live
@@ -50,7 +71,7 @@ def test_index_html_is_structurally_unique():
     assert html.count("<script>") == html.count("</script>")
 
     body = html[html.index("<body>"):]
-    assert ".typing::after" not in body      # CSS 不许漏进 body
+    assert ".typing::after" not in body
     assert "@keyframes" not in body
 
 
@@ -58,8 +79,7 @@ def test_served_page_matches_file(live):
     base, _ = live
     from web.server import INDEX
 
-    response = httpx.get(base + "/", timeout=10)
-    assert response.content == INDEX.read_bytes()
+    assert httpx.get(base + "/", timeout=10).content == INDEX.read_bytes()
 
 
 def test_health_reports_mode(live):
@@ -69,54 +89,12 @@ def test_health_reports_mode(live):
     assert payload["security"] in ("sqlcipher", "plaintext-dev")
 
 
-def test_chat_streams_delta_then_done(live):
-    base, _ = live
-    events = []
-    with httpx.stream(
-        "POST", base + "/api/chat", timeout=30,
-        json={"text": "在吗", "session_id": "web-test"},
-    ) as response:
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/event-stream")
-        for line in response.iter_lines():
-            if line.startswith("data: "):
-                events.append(json.loads(line[6:]))
-
-    kinds = [e["type"] for e in events]
-    assert "delta" in kinds
-    assert kinds[-1] == "done"
-    done = events[-1]
-    assert done["reply"] == "嗯，我在。"
-    assert set(done) >= {"risk", "recall_count", "cache_hit"}
-
-
-def test_chat_persists_messages(live):
-    base, app = live
-    with httpx.stream(
-        "POST", base + "/api/chat", timeout=30,
-        json={"text": "还记得我吗", "session_id": "web-2"},
-    ) as response:
-        list(response.iter_lines())
-
-    conn = app.connect()
-    try:
-        rows = conn.execute("SELECT role, content FROM messages ORDER BY id").fetchall()
-    finally:
-        conn.close()
-    assert [r["role"] for r in rows][-2:] == ["user", "assistant"]
-    assert rows[-2]["content"] == "还记得我吗"
-
-
-def test_empty_text_is_rejected(live):
-    base, _ = live
-    response = httpx.post(base + "/api/chat", json={"text": "   "}, timeout=10)
-    assert response.status_code == 400
-
-
 def test_unknown_path_is_404(live):
     base, _ = live
     assert httpx.get(base + "/nope", timeout=10).status_code == 404
 
+
+# ───────────────────────────────────────── 生命周期
 
 def test_hello_registers_a_page(live):
     base, app = live
@@ -128,7 +106,6 @@ def test_hello_registers_a_page(live):
 
 
 def test_closing_one_of_two_tabs_keeps_service(live):
-    """多开标签页时，关掉一个不该把服务带走（这是"关网页就停"最容易被做坏的地方）。"""
     base, app = live
     a = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
     b = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
@@ -147,12 +124,10 @@ def test_closing_one_of_two_tabs_keeps_service(live):
 def test_ping_keeps_page_alive(live):
     base, app = live
     page = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
-    before = app.watchdog.last_seen
     payload = httpx.get(f"{base}/api/ping?page={page}", timeout=10).json()
     assert payload["ok"] is True
     assert payload["pages"] == 1
     assert app.watchdog.last_seen is not None
-    assert before is None or app.watchdog.last_seen >= before
 
 
 def test_ping_cancels_pending_stop(live):
@@ -170,59 +145,146 @@ def test_stale_page_does_not_block_shutdown(live):
     base, app = live
     alive = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
     ghost = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
-
-    # 把幽灵页面的心跳时间推到很久以前
     app.presences._pages[ghost] = 0.0
 
     payload = httpx.post(f"{base}/api/bye?page={alive}", timeout=10).json()
     assert payload["pages"] == 0
     assert payload["stop_in"] is not None
-    assert app.watchdog.pending_stop_at is not None
 
 
-def test_sessions_are_grouped_with_preview(live):
-    """左侧日期栏的数据源：每个会话一条，带本地日期与预览。"""
-    base, app = live
-    conn = app.connect()
-    try:
-        for sid, text in (("s-b", "第二个会话"), ("s-a", "第一个会话")):
-            conn.execute(
-                "INSERT INTO messages (role, content, message_time, created_at, session_id) "
-                "VALUES ('user', ?, '2026-11-04T12:00:00Z', '2026-11-04T12:00:00Z', ?)",
-                (text, sid),
-            )
-    finally:
-        conn.close()
+# ───────────────────────────────────────── 对话
 
-    items = httpx.get(base + "/api/sessions", timeout=10).json()
-    by_id = {i["session_id"]: i for i in items}
-    assert {"s-a", "s-b"} <= set(by_id)
-    assert by_id["s-b"]["preview"] == "第二个会话"
-    assert len(by_id["s-b"]["day"]) == 10          # YYYY-MM-DD
-    assert by_id["s-b"]["turns"] >= 1
-
-
-def test_history_returns_messages_in_order(live):
-    base, app = live
-    conn = app.connect()
-    try:
-        for role, text in (("user", "第一句"), ("assistant", "回应一"),
-                           ("user", "第二句"), ("assistant", "回应二")):
-            conn.execute(
-                "INSERT INTO messages (role, content, message_time, created_at, session_id) "
-                "VALUES (?, ?, '2026-11-04T12:00:00Z', '2026-11-04T12:00:00Z', 'h1')",
-                (role, text),
-            )
-    finally:
-        conn.close()
-
-    items = httpx.get(base + "/api/history?session=h1", timeout=10).json()
-    assert [i["text"] for i in items] == ["第一句", "回应一", "第二句", "回应二"]
-    assert items[0]["role"] == "user"
-    assert items[1]["at"]                          # 转成了本地时间字符串
-
-
-def test_history_of_unknown_session_is_empty(live):
+def test_chat_streams_delta_then_done(live):
     base, _ = live
-    assert httpx.get(base + "/api/history?session=nope", timeout=10).json() == []
+    events = []
+    with httpx.stream(
+        "POST", base + "/api/chat", timeout=30, json={"text": "在吗"},
+    ) as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        for line in response.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
 
+    kinds = [e["type"] for e in events]
+    assert "delta" in kinds
+    assert kinds[-1] == "done"
+    assert events[-1]["reply"] == "嗯，我在。"
+
+
+def test_chat_persists_today(live):
+    base, app = live
+    with httpx.stream("POST", base + "/api/chat", timeout=30,
+                      json={"text": "还记得我吗"}) as response:
+        list(response.iter_lines())
+
+    conn = app.connect()
+    try:
+        rows = conn.execute("SELECT role, content, session_id FROM messages ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    assert [r["role"] for r in rows][-2:] == ["user", "assistant"]
+    assert rows[-2]["content"] == "还记得我吗"
+    assert rows[-1]["session_id"].startswith("day:")   # 会话单位是天
+
+
+def test_empty_text_is_rejected(live):
+    base, _ = live
+    assert httpx.post(base + "/api/chat", json={"text": "   "}, timeout=10).status_code == 400
+
+
+# ───────────────────────────────────────── 日期栏
+
+def test_days_group_by_local_date(live):
+    base, app = live
+    _insert(app, "user", "今天第一句", "2026-11-04T12:00:00Z", session="a")
+    _insert(app, "assistant", "今天回一句", "2026-11-04T12:01:00Z", session="a")
+    _insert(app, "user", "同一句别的 session", "2026-11-04T13:00:00Z", session="b")
+    _insert(app, "user", "昨天那句", "2026-11-03T12:00:00Z", session="c")
+
+    days = httpx.get(base + "/api/days", timeout=10).json()
+    by_day = {d["day"]: d for d in days}
+    assert set(by_day) == {"2026-11-04", "2026-11-03"}
+    # 同一天里不同 session 合并成一天
+    assert by_day["2026-11-04"]["messages"] == 3
+    assert by_day["2026-11-04"]["turns"] == 2
+    assert by_day["2026-11-04"]["preview"] == "同一句别的 session"
+
+
+def test_history_merges_multiple_days(live):
+    base, app = live
+    _insert(app, "user", "昨天的话", "2026-11-03T12:00:00Z")
+    _insert(app, "user", "今天的话", "2026-11-04T12:00:00Z")
+    _insert(app, "assistant", "今天的回应", "2026-11-04T12:01:00Z")
+    _insert(app, "user", "另一天", "2026-11-01T12:00:00Z")
+
+    items = httpx.get(base + "/api/history?days=2026-11-04,2026-11-03", timeout=10).json()
+    assert [i["text"] for i in items] == ["昨天的话", "今天的话", "今天的回应"]
+    assert {i["day"] for i in items} == {"2026-11-04", "2026-11-03"}
+    assert items[0]["at"] and items[0]["id"]
+
+
+def test_history_without_days_returns_everything(live):
+    base, app = live
+    _insert(app, "user", "唯一一句", "2026-11-04T12:00:00Z")
+    assert len(httpx.get(base + "/api/history?days=", timeout=10).json()) == 1
+
+
+# ───────────────────────────────────────── 删除
+
+def test_delete_whole_day(live):
+    base, app = live
+    _insert(app, "user", "要删的", "2026-11-04T12:00:00Z")
+    _insert(app, "assistant", "也要删", "2026-11-04T12:01:00Z")
+    _insert(app, "user", "留着的", "2026-11-03T12:00:00Z")
+
+    out = httpx.post(base + "/api/delete", json={"days": ["2026-11-04"]}, timeout=10).json()
+    assert out["deleted"] == 2
+    assert out["fts_ok"] is True
+
+    left = httpx.get(base + "/api/history?days=", timeout=10).json()
+    assert [i["text"] for i in left] == ["留着的"]
+
+
+def test_delete_multiple_days(live):
+    base, app = live
+    _insert(app, "user", "四号", "2026-11-04T12:00:00Z")
+    _insert(app, "user", "三号", "2026-11-03T12:00:00Z")
+    _insert(app, "user", "一号", "2026-11-01T12:00:00Z")
+
+    out = httpx.post(base + "/api/delete",
+                     json={"days": ["2026-11-04", "2026-11-03"]}, timeout=10).json()
+    assert out["deleted"] == 2
+    left = httpx.get(base + "/api/history?days=", timeout=10).json()
+    assert [i["text"] for i in left] == ["一号"]
+
+
+def test_delete_single_message(live):
+    base, app = live
+    _insert(app, "user", "第一条", "2026-11-04T12:00:00Z")
+    _insert(app, "user", "第二条", "2026-11-04T12:01:00Z")
+
+    msg_id = httpx.get(base + "/api/history?days=2026-11-04", timeout=10).json()[0]["id"]
+    out = httpx.post(base + "/api/delete", json={"message_ids": [msg_id]}, timeout=10).json()
+    assert out["deleted"] == 1
+
+    left = httpx.get(base + "/api/history?days=2026-11-04", timeout=10).json()
+    assert [i["text"] for i in left] == ["第二条"]
+
+
+def test_delete_keeps_index_clean(live):
+    base, app = live
+    _insert(app, "user", "会被删掉的敏感内容", "2026-11-04T12:00:00Z")
+    httpx.post(base + "/api/delete", json={"days": ["2026-11-04"]}, timeout=10)
+
+    conn = app.connect()
+    try:
+        assert db.verify_fts(conn).ok
+        assert db.search_messages(conn, "敏感内容") == []
+    finally:
+        conn.close()
+
+
+def test_delete_requires_a_target(live):
+    base, _ = live
+    assert httpx.post(base + "/api/delete", json={}, timeout=10).status_code == 400

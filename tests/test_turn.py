@@ -119,21 +119,25 @@ def test_empty_reply_is_not_persisted(conn):
     assert conn.execute("SELECT count(*) FROM messages WHERE role='assistant'").fetchone()[0] == 0
 
 
-def test_sessions_do_not_share_recent_history(conn):
-    """网页每次刷新是新 session；旧会话的内容不能混进来。"""
-    seed(conn)
-    provider = FakeProvider(["A 会话第一句", "B 会话第一句", "A 会话第二句"])
-    run_turn(conn, provider, "我是 A 说的话", now=NOW, reference_time=REF,
-             session_id="A", **BASE)
-    run_turn(conn, provider, "我是 B 说的话", now=NOW, reference_time=REF,
-             session_id="B", **BASE)
-    run_turn(conn, provider, "A 的第二句", now=NOW, reference_time=REF,
-             session_id="A", **BASE)
+def test_recent_turns_are_scoped_to_the_local_day(conn):
+    """会话单位是"天"：同一天共享上下文，跨天不共享。
 
-    a_messages = json.dumps(provider.calls[2]["messages"], ensure_ascii=False)
-    assert "我是 A 说的话" in a_messages
-    assert "我是 B 说的话" not in a_messages
+    早先这里按 session_id 隔离，但页面每次刷新都会换 session，反而把
+    同一天的对话切断了；现在改成按本地自然日。
+    """
+    from companion.prompt import local_day_bounds
+    from companion.turn import _recent_turns
 
+    now = datetime(2026, 11, 4, 19, 50)
+    _insert = "INSERT INTO messages (role, content, message_time, created_at, session_id) VALUES (?,?,?,?,?)"
+    conn.execute(_insert, ("user", "昨天说的话", "2026-11-03T12:00:00Z", NOW, "a"))
+    conn.execute(_insert, ("user", "今天说的话", "2026-11-04T12:00:00Z", NOW, "b"))
+
+    start, end = local_day_bounds(now, "Asia/Shanghai")
+    turns = _recent_turns(conn, start, end)
+    texts = [t.content for t in turns]
+    assert "今天说的话" in texts
+    assert "昨天说的话" not in texts
 
 def test_session_turn_index_increments(conn):
     seed(conn)
@@ -155,3 +159,4 @@ def test_risk_injects_safety_section(conn):
     )
     assert "安全边界" in result.bundle.dynamic_block
     assert "12356" in json.dumps(provider.calls[0], ensure_ascii=False)
+

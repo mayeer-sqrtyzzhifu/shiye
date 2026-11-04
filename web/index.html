@@ -16,81 +16,77 @@
     font: 15px/1.65 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     display: flex; flex-direction: column;
   }
-  #banner {
-    padding: 10px 20px; background: #3a1f1f; color: #ffd9d9;
-    border-bottom: 1px solid #6b2b2b; font-size: 13px; line-height: 1.7;
-  }
+  #banner { padding: 10px 20px; background: #3a1f1f; color: #ffd9d9;
+    border-bottom: 1px solid #6b2b2b; font-size: 13px; }
   #banner[hidden] { display: none; }
-  #banner code { background: #522a2a; padding: 1px 6px; border-radius: 4px; }
-  #banner a { color: #ffd9d9; }
-
   .shell { flex: 1; display: flex; min-height: 0; }
 
-  aside {
-    width: 232px; flex: none; background: var(--side);
-    border-right: 1px solid var(--line); display: flex; flex-direction: column;
-    min-height: 0;
+  aside { width: 248px; flex: none; background: var(--side);
+    border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
+  .tools { padding: 10px 10px 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .tools button {
+    flex: 1 1 auto; padding: 7px 10px; border-radius: 9px; font: inherit; font-size: 12px;
+    border: 1px solid var(--line); background: transparent; color: #c9c9d1; cursor: pointer;
   }
-  aside button {
-    margin: 12px; padding: 9px 12px; border-radius: 10px;
-    border: 1px dashed var(--line); background: transparent;
-    color: var(--text); font: inherit; cursor: pointer; text-align: left;
+  .tools button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .tools button:disabled { opacity: .4; cursor: default; }
+  .tools button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+  #days { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+  .day-row {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 8px 8px; border-radius: 9px; cursor: pointer;
   }
-  aside button:hover { border-color: var(--accent); color: var(--accent); }
-  #sessions { flex: 1; overflow-y: auto; padding: 0 8px 16px; }
-  .day {
-    font-size: 11px; color: var(--muted); padding: 12px 8px 4px;
-    letter-spacing: .04em;
-  }
-  .sess {
-    padding: 7px 9px; border-radius: 8px; cursor: pointer;
-    font-size: 13px; color: #c9c9d1; line-height: 1.45;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .sess:hover { background: #1d1d24; }
-  .sess.active { background: #262636; color: #fff; }
-  .sess .n { color: var(--muted); font-size: 11px; margin-left: 6px; }
-  .empty { color: var(--muted); font-size: 12px; padding: 10px; }
+  .day-row:hover { background: #1d1d24; }
+  .day-row.active { background: #262636; }
+  .day-row input { margin-top: 4px; accent-color: var(--accent); }
+  .day-body { flex: 1; min-width: 0; }
+  .day-title { font-size: 13px; color: #dddde4; display: flex; gap: 6px; align-items: baseline; }
+  .day-title .n { color: var(--muted); font-size: 11px; }
+  .day-preview { font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .day-x { color: var(--muted); font-size: 13px; opacity: 0; padding: 0 4px; }
+  .day-row:hover .day-x { opacity: 1; }
+  .day-x:hover { color: var(--danger); }
+  .empty { color: var(--muted); font-size: 12px; padding: 12px 10px; }
 
   main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  header {
-    padding: 12px 20px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: center; gap: 12px; color: var(--muted);
-  }
-  header b { color: var(--text); font-weight: 600; }
+  header { padding: 11px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 13px; }
+  header b { color: var(--text); font-weight: 600; font-size: 15px; }
+  #scope { color: var(--accent); }
   #state { margin-left: auto; font-size: 12px; }
-  #stream {
-    flex: 1; overflow-y: auto; padding: 24px 20px 8px;
-    display: flex; flex-direction: column; gap: 14px;
-  }
+
+  #stream { flex: 1; overflow-y: auto; padding: 20px 20px 8px;
+    display: flex; flex-direction: column; gap: 12px; }
+  .day-sep { align-self: center; font-size: 11px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; margin: 6px 0; }
   .row { display: flex; }
   .row.user { justify-content: flex-end; }
-  .bubble {
-    max-width: min(680px, 82%); padding: 10px 14px; border-radius: 14px;
-    white-space: pre-wrap; word-break: break-word;
-  }
+  .bubble { max-width: min(680px, 82%); padding: 10px 14px; border-radius: 14px;
+    white-space: pre-wrap; word-break: break-word; position: relative; }
   .user .bubble { background: #2f3a5c; border-bottom-right-radius: 4px; }
   .bot .bubble { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
-  .meta { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .bubble .x { position: absolute; top: -8px; right: -8px; width: 18px; height: 18px;
+    border-radius: 50%; background: #2c2c34; color: var(--muted); font-size: 12px;
+    line-height: 18px; text-align: center; cursor: pointer; opacity: 0; }
+  .row:hover .bubble .x { opacity: 1; }
+  .bubble .x:hover { background: #6b2b2b; color: #fff; }
+  .meta { font-size: 12px; color: var(--muted); margin-top: 5px; }
   .meta .tag { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; margin-right: 6px; }
   .tag.warn { color: var(--danger); border-color: #6b2b2b; }
-  form {
-    display: flex; gap: 10px; padding: 14px 20px 20px; border-top: 1px solid var(--line);
-  }
-  textarea {
-    flex: 1; resize: none; height: 56px; padding: 12px 14px;
-    background: var(--panel); color: var(--text);
-    border: 1px solid var(--line); border-radius: 12px; font: inherit; outline: none;
-  }
+
+  form { display: flex; gap: 10px; padding: 14px 20px 20px; border-top: 1px solid var(--line); }
+  textarea { flex: 1; resize: none; height: 56px; padding: 12px 14px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 12px; font: inherit; outline: none; }
   textarea:focus { border-color: var(--accent); }
-  form button {
-    padding: 0 20px; border-radius: 12px; border: 1px solid var(--line);
-    background: var(--accent); color: #0d0d12; font: inherit; font-weight: 600; cursor: pointer;
-  }
-  form button:disabled { opacity: .5; cursor: default; }
+  textarea:disabled { opacity: .5; }
+  form button { padding: 0 20px; border-radius: 12px; border: 1px solid var(--line);
+    background: var(--accent); color: #0d0d12; font: inherit; font-weight: 600; cursor: pointer; }
+  form button:disabled { opacity: .4; cursor: default; }
   .typing::after { content: "▍"; animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
-  @media (max-width: 720px) { aside { display: none; } }
+  @media (max-width: 760px) { aside { display: none; } }
 </style>
 </head>
 <body>
@@ -98,14 +94,18 @@
 
 <div class="shell">
   <aside>
-    <button id="new-chat">＋ 新对话</button>
-    <div id="sessions"></div>
+    <div class="tools">
+      <button id="btn-today">回到今天</button>
+      <button id="btn-view" disabled>查看选中</button>
+      <button id="btn-del" class="danger" disabled>删除选中</button>
+    </div>
+    <div id="days"></div>
   </aside>
 
   <main>
     <header>
       <b>Mochi</b>
-      <span>本地 · 加密存储</span>
+      <span id="scope">今天</span>
       <span id="state">就绪</span>
     </header>
 
@@ -124,20 +124,26 @@ const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const stateEl = document.getElementById("state");
-const sessionsEl = document.getElementById("sessions");
+const scopeEl = document.getElementById("scope");
+const daysEl = document.getElementById("days");
+const btnToday = document.getElementById("btn-today");
+const btnView = document.getElementById("btn-view");
+const btnDel = document.getElementById("btn-del");
 
-const SESS_KEY = "companion.session";
 const DAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-
-let sessionId = localStorage.getItem(SESS_KEY) || null;
 let pageId = null;
+
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+let selected = new Set([localToday()]);   // 侧栏勾选的日期
+let viewing = new Set(selected);           // 主区当前展示的日期
 
 // ── 生命周期
 async function hello() {
-  try {
-    const res = await fetch("/api/hello", { cache: "no-store" });
-    if (res.ok) pageId = (await res.json()).page_id;
-  } catch (_) {}
+  try { const r = await fetch("/api/hello", { cache: "no-store" });
+    if (r.ok) pageId = (await r.json()).page_id; } catch (_) {}
 }
 async function ping() {
   if (!pageId) return;
@@ -149,102 +155,165 @@ window.addEventListener("pagehide", () => {
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) ping(); });
 
-// ── 侧栏：按日期留档
-function newId() {
-  return "web-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-}
-
-function rememberSession(id) {
-  sessionId = id;
-  localStorage.setItem(SESS_KEY, id);
-}
-
+// ── 侧栏
 function dayLabel(day) {
-  const today = new Date();
-  const iso = (d) => d.toISOString().slice(0, 10);
-  if (day === iso(today)) return "今天";
-  const y = new Date(today); y.setDate(y.getDate() - 1);
-  if (day === iso(y)) return "昨天";
-  const d = new Date(day + "T00:00:00");
-  return `${day} ${DAY_NAMES[d.getDay()]}`;
+  const today = localToday();
+  if (day === today) return "今天";
+  const d = new Date(today + "T00:00:00");
+  d.setDate(d.getDate() - 1);
+  const y = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  if (day === y) return "昨天";
+  const t = new Date(day + "T00:00:00");
+  return `${day} ${DAY_NAMES[t.getDay()]}`;
 }
 
-async function loadSessions() {
-  let items = [];
-  try {
-    items = await (await fetch("/api/sessions", { cache: "no-store" })).json();
-  } catch (_) { return; }
+let dayRows = [];
 
-  sessionsEl.innerHTML = "";
-  if (!items.length) {
-    sessionsEl.innerHTML = '<div class="empty">还没有对话</div>';
-    return;
-  }
+async function loadDays() {
+  try { dayRows = await (await fetch("/api/days", { cache: "no-store" })).json(); }
+  catch (_) { dayRows = []; }
+  renderDays();
+  updateTools();
+}
 
-  let currentDay = null;
-  for (const item of items) {
-    if (item.day !== currentDay) {
-      currentDay = item.day;
-      const head = document.createElement("div");
-      head.className = "day";
-      head.textContent = dayLabel(item.day);
-      sessionsEl.appendChild(head);
-    }
+function renderDays() {
+  daysEl.innerHTML = "";
+  const today = localToday();
+  const known = new Set(dayRows.map((d) => d.day));
+  const rows = [...dayRows];
+  if (!known.has(today)) rows.unshift({ day: today, turns: 0, messages: 0, preview: "（今天还没开始）" });
+
+  for (const item of rows) {
     const row = document.createElement("div");
-    row.className = "sess" + (item.session_id === sessionId ? " active" : "");
-    row.dataset.session = item.session_id;
-    row.title = `${item.day} ${item.time} · ${item.turns} 轮 · ${item.preview}`;
-    row.textContent = (item.preview || "（空对话）");
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = item.time;
-    row.appendChild(n);
-    row.addEventListener("click", () => {
-      rememberSession(item.session_id);
-      loadHistory();
-      markActive();
+    row.className = "day-row" + (viewing.size === 1 && viewing.has(item.day) ? " active" : "");
+    row.dataset.day = item.day;
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = selected.has(item.day);
+    box.addEventListener("click", (e) => e.stopPropagation());
+    box.addEventListener("change", () => {
+      if (box.checked) selected.add(item.day); else selected.delete(item.day);
+      updateTools();
     });
-    sessionsEl.appendChild(row);
+
+    const body = document.createElement("div");
+    body.className = "day-body";
+    const title = document.createElement("div");
+    title.className = "day-title";
+    title.textContent = dayLabel(item.day);
+    if (item.turns) {
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = `${item.turns} 轮`;
+      title.appendChild(n);
+    }
+    const prev = document.createElement("div");
+    prev.className = "day-preview";
+    prev.textContent = item.preview || "（空）";
+    body.append(title, prev);
+
+    const x = document.createElement("div");
+    x.className = "day-x";
+    x.textContent = "✕";
+    x.title = "删除这一天的对话";
+    x.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await removeDays([item.day]);
+    });
+
+    row.append(box, body, x);
+    row.addEventListener("click", () => {
+      selected = new Set([item.day]);
+      viewing = new Set([item.day]);
+      renderDays();
+      updateTools();
+      loadHistory();
+    });
+    daysEl.appendChild(row);
   }
 }
 
-function markActive() {
-  for (const el of sessionsEl.querySelectorAll(".sess")) {
-    el.classList.toggle("active", el.dataset.session === sessionId);
-  }
+function updateTools() {
+  btnView.disabled = selected.size === 0;
+  btnDel.disabled = selected.size === 0;
+  btnView.textContent = selected.size > 1 ? `查看 ${selected.size} 天` : "查看选中";
+  btnDel.textContent = selected.size > 1 ? `删除 ${selected.size} 天` : "删除选中";
+}
+
+function isToday() {
+  return viewing.size === 1 && viewing.has(localToday());
+}
+
+function updateScope() {
+  const days = [...viewing].sort().reverse();
+  scopeEl.textContent = days.length > 1
+    ? `合并查看 ${days.length} 天`
+    : dayLabel(days[0] || localToday());
+  const canChat = isToday();
+  input.disabled = !canChat;
+  sendBtn.disabled = !canChat;
+  input.placeholder = canChat
+    ? "说点什么…（Enter 发送，Shift+Enter 换行）"
+    : "正在看历史记录，点「回到今天」才能继续聊";
 }
 
 // ── 历史
 function clearStream() { streamEl.innerHTML = ""; }
 
+function addSep(text) {
+  const sep = document.createElement("div");
+  sep.className = "day-sep";
+  sep.textContent = text;
+  streamEl.appendChild(sep);
+}
+
 async function loadHistory() {
   clearStream();
-  if (!sessionId) return;
+  updateScope();
+  const days = [...viewing].sort();
+  if (!days.length) return;
   let items = [];
   try {
-    items = await (await fetch("/api/history?session=" + encodeURIComponent(sessionId),
+    items = await (await fetch("/api/history?days=" + encodeURIComponent(days.join(",")),
                                { cache: "no-store" })).json();
   } catch (_) { return; }
+
+  let lastDay = null;
   for (const m of items) {
-    if (m.role === "user") addRow("user", m.text);
+    if (days.length > 1 && m.day !== lastDay) { addSep(dayLabel(m.day)); lastDay = m.day; }
+    if (m.role === "user") addRow("user", m.text, m.id);
     else if (m.role === "assistant") {
-      const bubble = addRow("bot", m.text);
+      const bubble = addRow("bot", m.text, m.id);
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.innerHTML = `<span class="tag">${(m.at || "").slice(11)}</span>`;
+      meta.innerHTML = `<span class="tag">${m.at || ""}</span>`;
       bubble.after(meta);
     }
+  }
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "day-sep";
+    empty.textContent = "这一天还没有对话";
+    streamEl.appendChild(empty);
   }
   streamEl.scrollTop = streamEl.scrollHeight;
 }
 
-// ── 渲染
-function addRow(role, text) {
+function addRow(role, text, id) {
   const row = document.createElement("div");
   row.className = "row " + role;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = text;
+  if (id) {
+    const x = document.createElement("div");
+    x.className = "x";
+    x.textContent = "✕";
+    x.title = "删除这条";
+    x.addEventListener("click", () => removeMessages([id]));
+    bubble.appendChild(x);
+  }
   row.appendChild(bubble);
   streamEl.appendChild(row);
   streamEl.scrollTop = streamEl.scrollHeight;
@@ -263,9 +332,43 @@ function addMeta(bubble, payload) {
   bubble.after(meta);
 }
 
+// ── 删除
+async function removeDays(days) {
+  const label = days.length > 1 ? `${days.length} 天` : dayLabel(days[0]);
+  if (!confirm(`删除 ${label} 的全部对话？不可恢复。`)) return;
+  await postDelete({ days });
+}
+
+async function removeMessages(ids) {
+  if (!confirm("删除这条消息？")) return;
+  await postDelete({ message_ids: ids });
+}
+
+async function postDelete(body) {
+  try {
+    const res = await fetch("/api/delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error || ("HTTP " + res.status));
+    stateEl.textContent = `已删除 ${out.deleted} 条`;
+    if (body.days) {
+      for (const d of body.days) selected.delete(d);
+      viewing = new Set([...viewing].filter((d) => !body.days.includes(d)));
+      if (!viewing.size) viewing = new Set([localToday()]);
+    }
+    await loadDays();
+    await loadHistory();
+  } catch (err) {
+    stateEl.textContent = "删除失败";
+    alert("删除失败：" + err.message);
+  }
+}
+
 // ── 发送
 async function send(text) {
-  if (!sessionId) rememberSession(newId());
   addRow("user", text);
   const bubble = addRow("bot", "");
   bubble.classList.add("typing");
@@ -276,7 +379,7 @@ async function send(text) {
     const res = await fetch("/api/chat?page=" + encodeURIComponent(pageId || ""), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, session_id: sessionId }),
+      body: JSON.stringify({ text }),
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
 
@@ -295,7 +398,6 @@ async function send(text) {
         const line = part.split("\n").find((l) => l.startsWith("data: "));
         if (!line) continue;
         const event = JSON.parse(line.slice(6));
-
         if (event.type === "delta") {
           bubble.textContent += event.text;
           streamEl.scrollTop = streamEl.scrollHeight;
@@ -309,13 +411,13 @@ async function send(text) {
         }
       }
     }
-    loadSessions();
+    await loadDays();
   } catch (err) {
     bubble.classList.remove("typing");
     bubble.textContent = "请求失败：" + err.message;
     bubble.style.color = "var(--danger)";
   } finally {
-    sendBtn.disabled = false;
+    sendBtn.disabled = !isToday();
     stateEl.textContent = "就绪";
     input.focus();
   }
@@ -324,24 +426,34 @@ async function send(text) {
 form.addEventListener("submit", (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text) return;
+  if (!text || !isToday()) return;
   input.value = "";
   send(text);
 });
 
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    form.requestSubmit();
-  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
 });
 
-document.getElementById("new-chat").addEventListener("click", () => {
-  rememberSession(newId());
-  clearStream();
-  markActive();
-  loadSessions();
-  input.focus();
+btnToday.addEventListener("click", () => {
+  const today = localToday();
+  selected = new Set([today]);
+  viewing = new Set([today]);
+  renderDays();
+  updateTools();
+  loadHistory();
+});
+
+btnView.addEventListener("click", () => {
+  if (!selected.size) return;
+  viewing = new Set(selected);
+  renderDays();
+  loadHistory();
+});
+
+btnDel.addEventListener("click", () => {
+  if (!selected.size) return;
+  removeDays([...selected]);
 });
 
 // ── 启动
@@ -352,14 +464,14 @@ if (!servedOverHttp) {
   banner.textContent =
     "这个页面是直接打开文件的，连不到本地服务。请先运行 " +
     "python web/server.py --port 8765，然后访问 http://127.0.0.1:8765/ 。";
-  sendBtn.disabled = true;
   input.disabled = true;
+  sendBtn.disabled = true;
 } else {
   hello().then(() => {
     ping();
     setInterval(ping, 20000);
-    loadSessions();
-    if (sessionId) loadHistory();
+    loadDays();
+    loadHistory();
   });
 }
 </script>

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # ───────────────────────────────────────── 预算
 
@@ -236,6 +236,27 @@ def needs_memory_note(user_text: str) -> bool:
     电报体（"嗯，期中的节奏。"就是这么来的）。
     """
     return any(cue in (user_text or "") for cue in _MEMORY_CUES)
+
+
+def local_day_bounds(now: datetime, tz_name: str | None = None) -> tuple[str, str]:
+    """本地“今天”的 UTC 区间，左闭右开。
+
+    会话单位是**天**：同一天里不管经过几次刷新，模型都该看到当天全部对话。
+    直接按 session_id 取会漏掉当天更早的消息（旧数据还带着随机 session_id）。
+    """
+    local = _localize(now, tz_name)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        start.astimezone(timezone.utc).strftime(fmt),
+        end.astimezone(timezone.utc).strftime(fmt),
+    )
+
+
+def day_key(now: datetime, tz_name: str | None = None) -> str:
+    """本地日期字符串，用作当天的 session 标识。"""
+    return _localize(now, tz_name).strftime("%Y-%m-%d")
 
 
 def _stamp(local: datetime) -> str:
@@ -468,5 +489,6 @@ def render(bundle: PromptBundle) -> dict:
         "dynamic": bundle.dynamic_block,
         "recent": lines,
     }
+
 
 
