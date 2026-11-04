@@ -210,3 +210,30 @@ def test_connect_secure_creates_and_reuses_key(tmp_path):
         assert again.execute("SELECT count(*) FROM memory_items").fetchone()[0] == 1
     finally:
         again.close()
+
+
+def test_export_rejects_empty_passphrase(tmp_path):
+    """空口令会生成明文库 —— "加密备份"最危险的失效方式。"""
+    import pytest
+
+    conn = db.connect_secure(tmp_path / "a.db")
+    db.apply_schema(conn)
+    try:
+        with pytest.raises(ValueError):
+            crypto.export_encrypted(conn, tmp_path / "b.db", "")
+        assert not (tmp_path / "b.db").exists()
+        with pytest.raises(ValueError):
+            crypto.export_encrypted(conn, tmp_path / "c.db", "   ")
+        assert not (tmp_path / "c.db").exists()
+    finally:
+        conn.close()
+
+
+def test_exported_backup_is_not_plaintext(tmp_path):
+    conn = db.connect_secure(tmp_path / "a.db")
+    db.apply_schema(conn)
+    try:
+        out = crypto.export_encrypted(conn, tmp_path / "b.db", "correct horse")
+        assert out.read_bytes()[:16] != b"SQLite format 3\x00"
+    finally:
+        conn.close()

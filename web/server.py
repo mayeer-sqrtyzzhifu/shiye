@@ -50,6 +50,23 @@ BOUNDARIES = (
 )
 
 
+def _memories_referencing(conn, message_ids: set[int]) -> list[int]:
+    """找出证据链里引用了这些消息的记忆。
+
+    删除口径偏保守：**只要引用了被删消息就一起删**。宁可多删一条记忆，
+    也不能让删掉的话从记忆里复述出来。
+    """
+    found: list[int] = []
+    for row in conn.execute("SELECT id, evidence_message_ids FROM memory_items"):
+        try:
+            refs = {int(x) for x in json.loads(row["evidence_message_ids"] or "[]")}
+        except (ValueError, TypeError):
+            continue
+        if refs & message_ids:
+            found.append(int(row["id"]))
+    return found
+
+
 class App:
     def __init__(
         self,
@@ -170,6 +187,24 @@ class App:
             cluster = f"msg-{uuid4().hex[:10]}"
             now = db.utc_now()
             with db.tx(conn):
+                # 先清掉从这些消息派生出来的记忆。
+                # 只删原文是不够的：记忆里有同一句话的内容，删了消息它还会被召回
+                # （实测：删掉「我养了只猫叫团子」后，从记忆里照样召回到猫）。
+                orphan_memories = _memories_referencing(conn, set(ids))
+                if orphan_memories:
+                    conn.executemany(
+                        "DELETE FROM memory_items WHERE id = ?",
+                        [(i,) for i in orphan_memories],
+                    )
+                    db.delete_memory_fts(conn, orphan_memories)
+                    for memory_id in orphan_memories:
+                        conn.execute(
+                            "INSERT INTO deletion_target "
+                            "(cluster_id, target_kind, target_id, deleted_at) "
+                            "VALUES (?, 'memory', ?, ?)",
+                            (cluster, str(memory_id), now),
+                        )
+
                 for start in range(0, len(ids), 400):
                     part = ids[start : start + 400]
                     marks = ", ".join("?" * len(part))
@@ -186,7 +221,11 @@ class App:
                     (now,),
                 )
             report = db.verify_fts(conn)
-            return {"deleted": len(ids), "fts_ok": report.ok}
+            return {
+                "deleted": len(ids),
+                "memories_deleted": len(orphan_memories),
+                "fts_ok": report.ok,
+            }
         finally:
             conn.close()
 
@@ -513,6 +552,7 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

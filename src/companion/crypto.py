@@ -129,8 +129,16 @@ def _quote(passphrase: str) -> str:
     return "'" + passphrase.replace("'", "''") + "'"
 
 
+def _require_passphrase(passphrase: str) -> str:
+    """空口令会让 SQLCipher 直接写出明文库 —— 这是"加密备份"最危险的一种失效。"""
+    if passphrase is None or not str(passphrase).strip():
+        raise ValueError("备份口令不能为空：空口令会生成明文数据库")
+    return str(passphrase)
+
+
 def export_encrypted(conn, out_path: str | Path, passphrase: str) -> Path:
     """导出一份**用口令重新加密**的备份。库文件本身不直接拷贝。"""
+    passphrase = _require_passphrase(passphrase)
     out_path = Path(out_path)
     if out_path.exists():
         raise FileExistsError(f"备份目标已存在：{out_path}")
@@ -154,6 +162,7 @@ def restore_from_backup(
     key_hex: str,
 ) -> Path:
     """把口令备份恢复成一台新机器上的加密库（用本机 key 重新加密）。"""
+    passphrase = _require_passphrase(passphrase)
     backup_path, target_path = Path(backup_path), Path(target_path)
     if target_path.exists():
         raise FileExistsError(f"目标已存在：{target_path}")
@@ -176,3 +185,5 @@ def restore_from_backup(
     finally:
         source.close()
     return target_path
+
+

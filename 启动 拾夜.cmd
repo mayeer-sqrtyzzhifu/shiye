@@ -20,7 +20,8 @@ echo.
 
 rem 运行时数据放在用户目录，不进仓库
 if "%LOCALAPPDATA%"=="" set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
-set "SHIYE_HOME=%LOCALAPPDATA%\shiye"
+rem 尊重用户已经设好的 SHIYE_HOME，不要覆盖
+if "%SHIYE_HOME%"=="" set "SHIYE_HOME=%LOCALAPPDATA%\shiye"
 if not exist "%SHIYE_HOME%\data" mkdir "%SHIYE_HOME%\data"
 rem 别让 __pycache__ 落在源码目录里
 set "PYTHONPYCACHEPREFIX=%SHIYE_HOME%\pycache"
@@ -35,5 +36,6 @@ if errorlevel 1 (
   echo.
   pause
 )
+
 
 

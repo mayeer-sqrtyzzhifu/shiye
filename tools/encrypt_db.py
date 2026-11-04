@@ -2,8 +2,8 @@
 
 用法::
 
-    python tools/encrypt_db.py %LOCALAPPDATA%\shiye\data\companion.db --key-file %LOCALAPPDATA%\shiye\data\companion.key
-    python tools/encrypt_db.py %LOCALAPPDATA%\shiye\data\companion.db --verify-only
+    python tools/encrypt_db.py %LOCALAPPDATA%/shiye/data/companion.db --key-file %LOCALAPPDATA%/shiye/data/companion.key
+    python tools/encrypt_db.py %LOCALAPPDATA%/shiye/data/companion.db --verify-only
 
 行为：
 1. 用 SQLCipher 以**空 key** 打开明文源（``PRAGMA key = ''`` 即不加密）；
@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -64,6 +65,17 @@ def main(argv: list[str] | None = None) -> int:
         if not target.exists():
             print(f"目标不存在：{target}", file=sys.stderr)
             return 2
+        raw = target.read_bytes()
+        if raw[:16] == b"SQLite format 3\x00":
+            # 明文库用 key 打不开，别让它崩在 sqlcipher 里
+            plain = sqlite3.connect(str(target))
+            try:
+                rows = _count(plain)
+            finally:
+                plain.close()
+            print(f"rows     : {rows}")
+            print("plaintext: LEAK（这是明文库，不是加密库）")
+            return 0
         conn = db.connect(target, key_hex=key)
         try:
             print(f"rows     : {_count(conn)}")
@@ -74,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"fts      : 无法校验（{type(exc).__name__}）")
         finally:
             conn.close()
-        raw = target.read_bytes()
-        print(f"plaintext: {'LEAK' if raw[:16] == b'SQLite format 3\x00' else 'none'}")
+        print("plaintext: none")
         return 0
 
     if target.exists():
@@ -114,8 +125,37 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.replace:
         backup = source.with_suffix(source.suffix + ".plain.bak")
+        if backup.exists():
+            print(f"明文备份已存在，拒绝覆盖：{backup}", file=sys.stderr)
+            return 2
         source.replace(backup)
-        print(f"原文件已改名为：{backup.name}（确认无误后请手动删除）")
+        try:
+            target.replace(source)
+        except OSError as exc:
+            backup.replace(source)
+            print(f"替换失败，已回滚：{exc}", file=sys.stderr)
+            return 1
+
+        # 替换后必须还能用同一把 key 打开、行数一致，否则回滚
+        try:
+            moved = db.connect(source, key_hex=key)
+            try:
+                after_move = _count(moved)
+            finally:
+                moved.close()
+        except Exception as exc:  # noqa: BLE001
+            backup.replace(source)
+            print(f"替换后无法打开，已回滚：{type(exc).__name__}: {exc}", file=sys.stderr)
+            return 1
+
+        if after_move != before:
+            target_snapshot = source
+            target_snapshot.replace(target)
+            backup.replace(source)
+            print(f"替换后行数不一致（{after_move} != {before}），已回滚", file=sys.stderr)
+            return 1
+
+        print(f"已替换：{source.name} 现在是加密库（明文备份 {backup.name}，确认无误后请删除）")
     else:
         print(f"未替换原文件；确认无误后用 --replace 或手动切换")
     return 0
@@ -123,4 +163,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 

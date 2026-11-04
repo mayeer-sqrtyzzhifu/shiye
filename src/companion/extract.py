@@ -99,6 +99,23 @@ def extract_turn(
     ).fetchone():
         return Outcome(ok=True, notes={"skipped": "already extracted"})
 
+    # 证据还在吗？用户可能在抽取跑完之前就把这几条消息删了。
+    # 不查这一步的话，删掉的内容会被抽取器重新写成一条记忆，等于删除失效。
+    wanted = {int(i) for i in evidence_ids}
+    if wanted:
+        marks = ", ".join("?" * len(wanted))
+        alive = {
+            row["id"]
+            for row in conn.execute(
+                f"SELECT id FROM messages WHERE id IN ({marks})", sorted(wanted)
+            )
+        }
+        if alive != wanted:
+            return Outcome(
+                ok=True,
+                notes={"skipped": "evidence deleted", "missing": sorted(wanted - alive)},
+            )
+
     messages = [
         {"role": "user", "content": PROMPT},
         {

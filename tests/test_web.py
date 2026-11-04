@@ -306,3 +306,73 @@ def test_delete_requires_a_target(live):
     assert httpx.post(base + "/api/delete", json={}, timeout=10).status_code == 400
 
 
+
+
+def test_deleting_messages_purges_derived_memories(live):
+    """删消息必须连带删掉从它抽取出来的记忆。
+
+    否则"删掉的话"会从记忆里被复述回来 —— 实测过：删掉「我养了只猫叫团子」
+    之后，召回仍然命中那条记忆。
+    """
+    base, app = live
+    conn = app.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+            "VALUES ('user','我养了只猫叫团子','2026-11-04T12:00:00Z','2026-11-04T12:00:00Z','s')"
+        )
+        mid = cur.lastrowid
+        db.upsert_message_fts(conn, mid, "我养了只猫叫团子")
+        cur = conn.execute(
+            "INSERT INTO memory_items (content, source, source_role, epistemic_status, "
+            "evidence_message_ids, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+            ("用户养了一只猫叫团子。", "extracted", "user", "explicit",
+             f"[{mid}]", "2026-11-04T12:00:00Z", "2026-11-04T12:00:00Z"),
+        )
+        db.upsert_memory_fts(conn, cur.lastrowid, "用户养了一只猫叫团子。")
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = httpx.post(base + "/api/delete", json={"days": ["2026-11-04"]}, timeout=10).json()
+    assert out["memories_deleted"] == 1
+
+    conn = app.connect()
+    try:
+        assert conn.execute("SELECT count(*) c FROM memory_items").fetchone()["c"] == 0
+        assert db.search_memories(conn, "团子") == []
+    finally:
+        conn.close()
+
+
+def test_delete_keeps_unrelated_memories(live):
+    """只删证据被删的记忆，别误伤别的。"""
+    base, app = live
+    conn = app.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+            "VALUES ('user','今天被领导骂了','2026-11-04T12:00:00Z','2026-11-04T12:00:00Z','s')"
+        )
+        mid = cur.lastrowid
+        db.upsert_message_fts(conn, mid, "今天被领导骂了")
+        for content, evidence in (("用户被领导骂了。", f"[{mid}]"),
+                                  ("用户最近失眠。", "[]")):
+            cur = conn.execute(
+                "INSERT INTO memory_items (content, source, source_role, epistemic_status, "
+                "evidence_message_ids, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (content, "extracted", "user", "explicit", evidence,
+                 "2026-11-04T12:00:00Z", "2026-11-04T12:00:00Z"),
+            )
+            db.upsert_memory_fts(conn, cur.lastrowid, content)
+        conn.commit()
+    finally:
+        conn.close()
+
+    httpx.post(base + "/api/delete", json={"days": ["2026-11-04"]}, timeout=10)
+    conn = app.connect()
+    try:
+        left = [r["content"] for r in conn.execute("SELECT content FROM memory_items")]
+        assert left == ["用户最近失眠。"]
+    finally:
+        conn.close()

@@ -253,3 +253,20 @@ def test_run_pending_keeps_failure_for_retry(conn):
     assert row["retry_count"] == 1
 
 
+
+
+def test_extraction_skips_when_evidence_deleted(conn):
+    """证据被删了就不该再抽取 —— 否则删掉的内容会被重新写成记忆。"""
+    from companion.provider import FakeProvider
+    from companion.extract import extract_turn
+
+    provider = FakeProvider(["不该被调用"])
+    outcome = extract_turn(
+        conn, provider,
+        user_text="我养了只猫叫团子", assistant_text="记住了",
+        evidence_ids=[9999], turn_id="t-deleted",
+    )
+    assert outcome.ok
+    assert outcome.notes.get("skipped") == "evidence deleted"
+    assert provider.calls == []          # 连模型调用都省了
+    assert conn.execute("SELECT count(*) c FROM memory_items").fetchone()["c"] == 0

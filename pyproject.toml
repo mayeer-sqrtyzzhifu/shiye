@@ -7,10 +7,10 @@ name = "companion"
 version = "0.1.0"
 description = "单机自用情感陪伴 Agent —— 数据底座与记忆链路"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["httpx>=0.27"]   # provider 用它在运行时发请求
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8"]
 crypto = ["sqlcipher3-binary"]   # Windows 上通常需要自行编译或换 wheel
 
 [tool.setuptools.packages.find]
@@ -20,4 +20,5 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+
 
