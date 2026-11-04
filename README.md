@@ -16,6 +16,7 @@
 - **关系语汇消费方** —— alias 归一化补漏召回、命中注入、注入/采用分开记账
 - **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
 - **L0 情绪/风险标志位** —— 隐晦危机表达可触发、谐谑不误判、危机资源离线常量
+- **最小网页前端** —— stdlib SSE 流式、单文件页面、无框架依赖
 
 `python -m pytest` → **96 项全绿**，无需安装任何依赖（真实调用走 `tools/live_smoke.py`）。
 
@@ -30,6 +31,7 @@ python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
 python eval/run_eval.py --no-judge    # 只跑确定性槽位，不花 token
+python web/server.py --port 8765      # 网页版 → http://127.0.0.1:8765/
 ```
 
 `.env`（已 gitignore）：
@@ -39,6 +41,16 @@ COMPANION_API_KEY=sk-...
 COMPANION_BASE_URL=https://api.deepseek.com
 COMPANION_MODEL=deepseek-flash
 ```
+
+## 网页版
+
+`powershell
+python web/server.py --port 8765 --data data
+# 打开 http://127.0.0.1:8765/
+`
+
+只监听 127.0.0.1，不对外暴露。页面是单文件（web/index.html），
+回复走 SSE 流式；/api/health 会如实报当前是 sqlcipher 还是 plaintext-dev。
 
 ## 加密（已落地）
 
@@ -84,6 +96,7 @@ crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new
 
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
+
 
 
 
