@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
@@ -76,6 +77,11 @@ def migrations() -> list[Path]:
     return sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
 
 
+def latest_version() -> int:
+    files = migrations()
+    return int(files[-1].name.split("_", 1)[0]) if files else 0
+
+
 def schema_version(conn: sqlite3.Connection) -> int:
     try:
         row = conn.execute(
@@ -122,7 +128,26 @@ def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
     conn.execute("COMMIT")
 
 
-# ───────────────────────────────────────── FTS 同步（无触发器，必须走 wrapper）
+# ───────────────────────────────────────── FTS 同步（无触发器分词，靠 wrapper + 脏标记）
+
+_FTS_TABLES: dict[str, tuple[str, str]] = {
+    "memory_items": ("memories_fts", "content"),
+    "messages": ("messages_fts", "content"),
+}
+
+
+def _clear_dirty(conn: sqlite3.Connection, table: str, ids: list[int] | None) -> None:
+    if ids is None:
+        conn.execute("DELETE FROM fts_dirty WHERE table_name = ?", (table,))
+        return
+    for chunk in range(0, len(ids), 500):
+        part = ids[chunk : chunk + 500]
+        marks = ", ".join("?" * len(part))
+        conn.execute(
+            f"DELETE FROM fts_dirty WHERE table_name = ? AND rowid_value IN ({marks})",
+            [table, *part],
+        )
+
 
 def upsert_message_fts(conn: sqlite3.Connection, message_id: int, content: str) -> None:
     conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (message_id,))
@@ -130,6 +155,7 @@ def upsert_message_fts(conn: sqlite3.Connection, message_id: int, content: str) 
         "INSERT INTO messages_fts(rowid, tok) VALUES (?, ?)",
         (message_id, fts.tokenized_text(content)),
     )
+    _clear_dirty(conn, "messages", [message_id])
 
 
 def upsert_memory_fts(conn: sqlite3.Connection, memory_id: int, content: str) -> None:
@@ -138,24 +164,122 @@ def upsert_memory_fts(conn: sqlite3.Connection, memory_id: int, content: str) ->
         "INSERT INTO memories_fts(rowid, tok) VALUES (?, ?)",
         (memory_id, fts.tokenized_text(content)),
     )
+    _clear_dirty(conn, "memory_items", [memory_id])
 
 
 def delete_memory_fts(conn: sqlite3.Connection, memory_ids: list[int]) -> None:
     for memory_id in memory_ids:
         conn.execute("DELETE FROM memories_fts WHERE rowid = ?", (memory_id,))
+    _clear_dirty(conn, "memory_items", memory_ids)
 
 
-def rebuild_fts(conn: sqlite3.Connection) -> dict[str, int]:
-    """Rebuild both indexes from authoritative tables (also the post-delete check)."""
-    conn.execute("DELETE FROM memories_fts")
-    conn.execute("DELETE FROM messages_fts")
-    memories = conn.execute("SELECT id, content FROM memory_items").fetchall()
-    messages = conn.execute("SELECT id, content FROM messages").fetchall()
-    for row in memories:
-        upsert_memory_fts(conn, row["id"], row["content"])
-    for row in messages:
-        upsert_message_fts(conn, row["id"], row["content"])
-    return {"memories": len(memories), "messages": len(messages)}
+# ───────────────────────────────────────── FTS 一致性校验
+
+@dataclass(frozen=True)
+class TableFtsReport:
+    table: str
+    expected: int          # 主表行数
+    indexed: int           # 索引行数
+    missing: tuple[int, ...]   # 主表有、索引没有
+    orphan: tuple[int, ...]    # 索引有、主表没有 ← "已删内容重现"的来源
+    stale: tuple[int, ...]     # 两边都有，但分词结果与当前正文不一致
+
+    @property
+    def ok(self) -> bool:
+        return not (self.missing or self.orphan or self.stale)
+
+
+@dataclass(frozen=True)
+class FtsReport:
+    tables: dict[str, TableFtsReport]
+    dirty: int                     # 绕过 wrapper 留下的未同步标记
+
+    @property
+    def ok(self) -> bool:
+        return self.dirty == 0 and all(t.ok for t in self.tables.values())
+
+    def summary(self) -> str:
+        parts = [
+            f"{name}: expected={r.expected} indexed={r.indexed} "
+            f"missing={len(r.missing)} orphan={len(r.orphan)} stale={len(r.stale)}"
+            for name, r in self.tables.items()
+        ]
+        return f"dirty={self.dirty} | " + " | ".join(parts)
+
+
+def _content_map(conn: sqlite3.Connection, table: str, column: str) -> dict[int, str]:
+    return {
+        r["id"]: (r[column] or "")
+        for r in conn.execute(f"SELECT id, {column} FROM {table}")
+    }
+
+
+def _index_map(conn: sqlite3.Connection, fts_table: str) -> dict[int, str]:
+    return {r["rowid"]: r["tok"] for r in conn.execute(f"SELECT rowid, tok FROM {fts_table}")}
+
+
+def verify_fts(conn: sqlite3.Connection, *, check_content: bool = True) -> FtsReport:
+    """Compare the index against the authoritative tables.
+
+    ``orphan`` 是最危险的一类：主表已删、索引还在，检索就会把已删内容捞回来。
+    """
+    tables: dict[str, TableFtsReport] = {}
+    for table, (fts_table, column) in _FTS_TABLES.items():
+        content = _content_map(conn, table, column)
+        index = _index_map(conn, fts_table)
+        missing = tuple(sorted(set(content) - set(index)))
+        orphan = tuple(sorted(set(index) - set(content)))
+        stale = ()
+        if check_content:
+            stale = tuple(sorted(
+                i for i in set(content) & set(index)
+                if fts.tokenized_text(content[i]) != index[i]
+            ))
+        tables[table] = TableFtsReport(
+            table=table,
+            expected=len(content),
+            indexed=len(index),
+            missing=missing,
+            orphan=orphan,
+            stale=stale,
+        )
+    dirty = conn.execute("SELECT count(*) FROM fts_dirty").fetchone()[0]
+    return FtsReport(tables=tables, dirty=dirty)
+
+
+def backfill_fts(conn: sqlite3.Connection, *, full: bool = False) -> FtsReport:
+    """Repair the index from the authoritative tables, then re-verify.
+
+    ``full=True`` 重建整张索引；否则只修不一致的行（增量修复）。
+    """
+    with tx(conn):
+        for table, (fts_table, column) in _FTS_TABLES.items():
+            content = _content_map(conn, table, column)
+            if full:
+                conn.execute(f"DELETE FROM {fts_table}")
+                for row_id, text in content.items():
+                    conn.execute(
+                        f"INSERT INTO {fts_table}(rowid, tok) VALUES (?, ?)",
+                        (row_id, fts.tokenized_text(text)),
+                    )
+            else:
+                index = _index_map(conn, fts_table)
+                for row_id, text in content.items():
+                    wanted = fts.tokenized_text(text)
+                    if index.get(row_id) != wanted:
+                        conn.execute(f"DELETE FROM {fts_table} WHERE rowid = ?", (row_id,))
+                        conn.execute(
+                            f"INSERT INTO {fts_table}(rowid, tok) VALUES (?, ?)",
+                            (row_id, wanted),
+                        )
+                for row_id in set(index) - set(content):
+                    conn.execute(f"DELETE FROM {fts_table} WHERE rowid = ?", (row_id,))
+            _clear_dirty(conn, table, None)
+    return verify_fts(conn)
+
+
+def rebuild_fts(conn: sqlite3.Connection) -> FtsReport:
+    return backfill_fts(conn, full=True)
 
 
 # ───────────────────────────────────────── 最小检索（B 路，验证 bm25 契约）

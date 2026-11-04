@@ -7,8 +7,9 @@
 - **M1 数据底座** —— §8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索
 - **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
 - **M2 之 L1 召回** —— 三路候选（日期 / 记忆文本 / 原文）、配额预留、`no_send` 全路径隔离、档案生日
+- **FTS 四件套** —— 建表 / 写入同步 / 回填 / 一致性校验（脏标记触发器强制）
 
-`python -m pytest` → **46 项全绿**，无需安装任何依赖。
+`python -m pytest` → **56 项全绿**，无需安装任何依赖。
 
 > 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -43,8 +44,9 @@ Windows 上装 SQLCipher 通常要自己编 wheel，因此 M1 允许先跑明文
 ```
 schema/001_init.sql     全部 DDL（可执行、已在 sqlite 3.51 验证）
 schema/002_profile.sql  长期档案槽位（birthday / calendar / name / timezone）
+schema/003_fts_sync.sql 脏标记触发器：绕过 wrapper 会被查出来
 src/companion/
-  db.py                 连接 / PRAGMA / 迁移 / FTS 同步 wrapper / 文本检索
+  db.py                 连接 / PRAGMA / 迁移 / FTS 同步与校验 / 文本检索
   fts.py                CJK 分词（索引侧 unigram+bigram，查询侧 bigram）
   datewin.py            区间相交 与 跨年周年窗口（规格里最容易写错的两段 SQL）
   timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
@@ -53,7 +55,30 @@ tests/
   test_schema.py        10 项：DDL / 检索方向 / 索引语义
   test_timequery.py     24 项：时间解析规则
   test_recall.py        12 项：三路融合、配额、no_send、档案生日
+  test_fts_sync.py      10 项：脏标记 / 回填 / 一致性校验
+tools/check_fts.py      巡检与修复 CLI
 ```
+
+## FTS 一致性
+
+SQLite 触发器里做不了 CJK 分词，所以索引不能由触发器直接维护。折中方案是
+**触发器只标脏**：任何对 `memory_items` / `messages` 的写入都留下一条
+`fts_dirty`，而真正的分词与写索引仍然在 Python 侧。
+
+于是形成闭环：
+
+| 做法 | 结果 |
+|---|---|
+| 走 `db.upsert_*_fts` | 写索引 + 清脏标记 → `verify_fts().ok == True` |
+| 绕过 wrapper 直接写 | 脏标记留下 → `verify_fts()` 报 `missing` / `stale` |
+| 直接删主表 | 索引残影 → 报 `orphan` |
+
+```powershell
+python tools/check_fts.py data/companion.db --fix
+```
+
+`orphan`（主表已删、索引还在）**不会真的被召回**，因为检索 SQL 与主表 JOIN
+——但那只是第二道防线，残影仍会撑大索引，并让任何不走 JOIN 的路径漏出已删内容。
 
 ## L1 召回
 
@@ -104,7 +129,7 @@ q.usable      # True
 
 ## 已知取舍
 
-- FTS 表存的是分词结果，**没有触发器**（SQLite 触发器里做不了 CJK 分词），
-  增删改必须走 `db.upsert_*_fts` / `db.delete_memory_fts`，并定期
-  `db.rebuild_fts` 校验。这是规格里「四件套」的同步部分，回填与校验尚未实现。
+- FTS 表存的是分词结果，没有触发器分词，**增删改必须走 `db.upsert_*_fts` /
+  `db.delete_memory_fts`**。绕过去不会静默：`fts_dirty` 会留下记录，
+  `verify_fts()` 与 `tools/check_fts.py` 都能查出来。
 - 单字查询靠索引侧 unigram 兜住，代价是索引体积约 2 倍。

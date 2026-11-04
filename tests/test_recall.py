@@ -36,15 +36,16 @@ def seed(conn):
 
 
 def test_migrations_reach_latest(conn):
-    assert db.schema_version(conn) == 2
+    assert db.schema_version(conn) == db.latest_version()
     assert conn.execute(
         "SELECT count(*) FROM sqlite_master WHERE name='profile'"
     ).fetchone()[0] == 1
 
 
 def test_migration_is_idempotent(conn):
-    assert db.apply_schema(conn) == 2
-    assert db.apply_schema(conn) == 2
+    latest = db.latest_version()
+    assert db.apply_schema(conn) == latest
+    assert db.apply_schema(conn) == latest
 
 
 def test_profile_slots_are_whitelisted(conn):
