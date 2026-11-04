@@ -21,8 +21,8 @@ BASE = dict(
 
 def seed(conn):
     cur = conn.execute(
-        "INSERT INTO messages (role, content, message_time, created_at, no_send) "
-        "VALUES ('user', ?, ?, ?, 1)",
+        "INSERT INTO messages (role, content, message_time, created_at, no_send, session_id) "
+        "VALUES ('user', ?, ?, ?, 1, 'default')",
         ("我朋友说中介坑了他一笔押金", REF, REF),
     )
     db.upsert_message_fts(conn, cur.lastrowid, "我朋友说中介坑了他一笔押金")
@@ -117,6 +117,22 @@ def test_empty_reply_is_not_persisted(conn):
     assert result.persisted is False
     assert "empty_reply" in result.notes
     assert conn.execute("SELECT count(*) FROM messages WHERE role='assistant'").fetchone()[0] == 0
+
+
+def test_sessions_do_not_share_recent_history(conn):
+    """网页每次刷新是新 session；旧会话的内容不能混进来。"""
+    seed(conn)
+    provider = FakeProvider(["A 会话第一句", "B 会话第一句", "A 会话第二句"])
+    run_turn(conn, provider, "我是 A 说的话", now=NOW, reference_time=REF,
+             session_id="A", **BASE)
+    run_turn(conn, provider, "我是 B 说的话", now=NOW, reference_time=REF,
+             session_id="B", **BASE)
+    run_turn(conn, provider, "A 的第二句", now=NOW, reference_time=REF,
+             session_id="A", **BASE)
+
+    a_messages = json.dumps(provider.calls[2]["messages"], ensure_ascii=False)
+    assert "我是 A 说的话" in a_messages
+    assert "我是 B 说的话" not in a_messages
 
 
 def test_session_turn_index_increments(conn):

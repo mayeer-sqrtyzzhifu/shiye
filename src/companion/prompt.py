@@ -158,6 +158,67 @@ _PROFILE_LABEL = {
 }
 
 
+def _localize(now: datetime, tz_name: str | None) -> datetime:
+    """把 ``now`` 转成用户所在时区。
+
+    * naive datetime 按**本机本地时间**理解（调用方写 ``19:50`` 时通常就是这个意思）；
+    * 有 tzinfo 的按它自己；
+    * 再按 profile 里的 IANA 名转换一次；没有 zoneinfo 数据时退回系统本地时区。
+
+    这一步是必须的：``turn.py`` 拿到的是 UTC，若直接格式化再贴时区标签，
+    模型会看到"12:30（Asia/Shanghai）"这种**错的当地时间**，说出"中午"。
+    """
+    aware = now.astimezone() if now.tzinfo is None else now
+    if tz_name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return aware.astimezone(ZoneInfo(tz_name))
+        except Exception:  # noqa: BLE001 - 缺 tzdata 时退回系统时区
+            pass
+    return aware.astimezone()
+
+
+def period_of_day(hour: int) -> str:
+    if hour < 5:
+        return "深夜"
+    if hour < 9:
+        return "早上"
+    if hour < 12:
+        return "上午"
+    if hour < 14:
+        return "中午"
+    if hour < 18:
+        return "下午"
+    if hour < 20:
+        return "傍晚"
+    return "晚上"
+
+
+def format_local_moment(value: str | None, tz_name: str | None = None) -> str | None:
+    """把存储里的时间转成**本地可读**形式。
+
+    存储一律 UTC；但召回条目旁若直接挂 ``2026-11-04T12:36:00Z``，模型会把它
+    当成当地时间，于是用户晚上八点收到"今天中午"——这是实际发生过的。
+    """
+    if not value:
+        return None
+    if len(value) == 10 and value[4] == "-" and value[7] == "-":
+        return value  # 纯日期（event_start）不带时区，原样返回
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    local = _localize(moment, tz_name)
+    return f"{local:%Y-%m-%d %H:%M}"
+
+
+def _stamp(local: datetime) -> str:
+    offset = local.strftime("%z")
+    pretty = f"UTC{offset[:3]}:{offset[3:]}" if offset else "本地时间"
+    return f"{local:%Y-%m-%d %H:%M}（{pretty}，{period_of_day(local.hour)}）"
+
+
 # ───────────────────────────────────────── 动态段
 
 def build_dynamic_block(
@@ -174,9 +235,8 @@ def build_dynamic_block(
     """按轮变化的一切。顺序固定，便于 diff 与缓存边界对齐。"""
     sections: list[str] = []
 
-    stamp = now.strftime("%Y-%m-%d %H:%M")
-    tz = (session or {}).get("timezone")
-    head = f"## 当前时间\n{stamp}" + (f"（{tz}）" if tz else "")
+    local = _localize(now, (session or {}).get("timezone"))
+    head = f"## 当前时间\n{_stamp(local)}"
     if gap_hint:
         head += f"\n距上次对话：{gap_hint}"
     sections.append(head)

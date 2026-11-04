@@ -25,6 +25,7 @@ from . import lexicon as lex_mod
 from . import signals as sig_mod
 from .prompt import (
     LexiconLine,
+    format_local_moment,
     PromptBundle,
     RecallLine,
     Turn,
@@ -56,8 +57,14 @@ class TurnResult:
     notes: dict[str, str] = field(default_factory=dict)
 
 
-def _materialize_recall(conn: sqlite3.Connection, result: RecallResult) -> tuple[RecallLine, ...]:
-    """把命中 id 换成可注入的文本。``local_only`` 永远不进这里。"""
+def _materialize_recall(
+    conn: sqlite3.Connection, result: RecallResult, tz_name: str | None = None
+) -> tuple[RecallLine, ...]:
+    """把命中 id 换成可注入的文本。``local_only`` 永远不进这里。
+
+    时间一律经 ``format_local_moment`` 转成本地时区：直接挂 UTC 时间戳会让
+    模型把「今天中午」说错（真实踩过）。
+    """
     lines: list[RecallLine] = []
     for hit in result.hits:
         if hit.kind == "memory":
@@ -66,23 +73,34 @@ def _materialize_recall(conn: sqlite3.Connection, result: RecallResult) -> tuple
                 (hit.id,),
             ).fetchone()
             if row:
-                lines.append(RecallLine(row["content"], row["event_start"] or row["message_time"], "memory"))
+                when = format_local_moment(row["event_start"] or row["message_time"], tz_name)
+                lines.append(RecallLine(row["content"], when, "memory"))
         else:
             row = conn.execute(
                 "SELECT content, message_time FROM messages WHERE id=?", (hit.id,)
             ).fetchone()
             if row:
-                lines.append(RecallLine(row["content"], row["message_time"], "message"))
+                lines.append(
+                    RecallLine(row["content"],
+                               format_local_moment(row["message_time"], tz_name),
+                               "message")
+                )
     return tuple(lines)
 
 
-def _recent_turns(conn: sqlite3.Connection, limit: int = RECENT_LIMIT) -> tuple[Turn, ...]:
-    """近期对话。**必须排除 no_send**：它连"历史上下文"这条路径也不许走（§9.2）。"""
+def _recent_turns(
+    conn: sqlite3.Connection, session_id: str, limit: int = RECENT_LIMIT
+) -> tuple[Turn, ...]:
+    """近期对话，**按会话隔离**，并排除 no_send（§9.2）。
+
+    没有会话过滤时，网页每次刷新生成的新 session 仍会看到上一次的内容，
+    表现为"你刚才不是说过吗"——这是真实踩到过的错乱。
+    """
     rows = conn.execute(
         "SELECT role, content FROM messages "
-        "WHERE role IN ('user','assistant') AND no_send = 0 "
+        "WHERE role IN ('user','assistant') AND no_send = 0 AND session_id = ? "
         "ORDER BY id DESC LIMIT ?",
-        (limit,),
+        (session_id, limit),
     ).fetchall()
     return tuple(Turn(r["role"], r["content"]) for r in reversed(rows))
 
@@ -148,7 +166,9 @@ def run_turn(
     ``risk=None`` 时由 L0 规则自己判定；显式传入则覆盖（便于测试与手工降级）。
     """
     now = now or datetime.now(timezone.utc)
-    stamp = reference_time or now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # 存储一律用 UTC；展示由 prompt 层按用户时区转换（naive 输入按本机本地时间理解）
+    aware = now.astimezone() if now.tzinfo is None else now
+    stamp = reference_time or aware.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     signals = sig_mod.scan(text)
     effective_risk = signals.risk if risk is None else risk
@@ -161,8 +181,8 @@ def run_turn(
     session = _load_session(conn, session_id)
 
     recalled = recall(conn, text, reference_time=reference_time, profile=profile)
-    recall_lines = _materialize_recall(conn, recalled)
-    turns = _recent_turns(conn)
+    recall_lines = _materialize_recall(conn, recalled, profile.get("timezone"))
+    turns = _recent_turns(conn, session_id)
 
     # 命中的语汇进动态段；调用方显式传入时以调用方为准（便于测试/手工注入）
     matched_lexicon = tuple(
@@ -212,9 +232,9 @@ def run_turn(
         with db.tx(conn):
             for role, content in (("user", text), ("assistant", completion.text)):
                 cur = conn.execute(
-                    "INSERT INTO messages (role, content, message_time, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (role, content, stamp, db.utc_now()),
+                    "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (role, content, stamp, db.utc_now(), session_id),
                 )
                 db.upsert_message_fts(conn, cur.lastrowid, content)
             turn_index += 1
@@ -240,3 +260,5 @@ def run_turn(
         signals=signals,
         notes=notes,
     )
+
+
