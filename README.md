@@ -6,29 +6,31 @@
 
 - **M1 数据底座** —— §8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索
 - **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
-- **M2 之 L1 召回** —— 三路候选（日期 / 记忆文本 / 原文）、配额预留、`no_send` 全路径隔离、档案生日
+- **M2 之 L1 召回** —— 三路候选、配额预留、`no_send` 全路径隔离、档案生日
 - **FTS 四件套** —— 建表 / 写入同步 / 回填 / 一致性校验（脏标记触发器强制）
 - **M3 删除链路** —— 事件簇圈定、三态（hide / blur / purge）、级联、`data_revision`
 - **Prompt 拼装** —— 稳定前缀 / per-turn 动态段分离、分段预算、`untrusted_text()` 注入防护
+- **真实 provider + 一轮对话** —— OpenAI 兼容流式、reasoning/usage 记账、端到端落库
 
-`python -m pytest` → **86 项全绿**，无需安装任何依赖。
+`python -m pytest` → **96 项全绿**，无需安装任何依赖（真实调用走 `tools/live_smoke.py`）。
 
-> 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
+> 规格文档在父目录，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
 ## 快速开始
 
 ```powershell
 cd companion
-python -m pytest          # 10 项测试，无需安装依赖
+python -m pytest                      # 96 项，不联网
+python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
+python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 ```
 
-```python
-from companion import db
+`.env`（已 gitignore）：
 
-conn = db.connect("data/companion.db")        # 明文，仅开发
-db.apply_schema(conn)
-print(db.security_mode(None))                  # "plaintext-dev"
-print(db.integrity_report(conn))
+```
+COMPANION_API_KEY=sk-...
+COMPANION_BASE_URL=https://api.deepseek.com
+COMPANION_MODEL=deepseek-flash
 ```
 
 ## 加密边界（重要）
@@ -41,124 +43,13 @@ print(db.integrity_report(conn))
 Windows 上装 SQLCipher 通常要自己编 wheel，因此 M1 允许先跑明文开发；
 **任何真实数据落盘前必须先解决加密**（规格 §9.1）。
 
-## 目录
+## prompt cache 实测（deepseek-flash, 2026-11-04）
 
-```
-schema/001_init.sql     全部 DDL（可执行、已在 sqlite 3.51 验证）
-schema/002_profile.sql  长期档案槽位（birthday / calendar / name / timezone）
-schema/003_fts_sync.sql 脏标记触发器：绕过 wrapper 会被查出来
-src/companion/
-  db.py                 连接 / PRAGMA / 迁移 / FTS 同步与校验 / 文本检索
-  fts.py                CJK 分词（索引侧 unigram+bigram，查询侧 bigram）
-  datewin.py            区间相交 与 跨年周年窗口（规格里最容易写错的两段 SQL）
-  timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
-  recall.py             L1 三路召回与配额融合
-  deletion.py           事件簇 / 三态删除 / 级联 / data_revision
-  prompt.py             稳定前缀 + per-turn 动态段 + 注入防护
-tests/
-  test_schema.py        10 项：DDL / 检索方向 / 索引语义
-  test_timequery.py     24 项：时间解析规则
-  test_recall.py        12 项：三路融合、配额、no_send、档案生日
-  test_fts_sync.py      10 项：脏标记 / 回填 / 一致性校验
-  test_deletion.py      13 项：事件簇 / 三态 / 级联 / 版本失效
-  test_prompt.py        17 项：前缀稳定性 / 段序 / 预算 / 注入防护
-tools/check_fts.py      巡检与修复 CLI
-```
+| 前缀填充 | prompt | 首次命中 | 第二次命中 |
+|---|---|---|---|
+| 200 | 334 | 0 | 128 |
+| 1200 | 1594 | 768 | **1408** |
+| 3000 | 3826 | 2304 | 3584 |
 
-## Prompt 拼装
-
-```python
-from companion.prompt import assemble, render
-
-bundle = assemble(
-    persona="你是 Mochi……",
-    now=datetime(2026, 11, 4, 19, 50),
-    user_message="今天好累",
-    boundaries=("不假装是人类",),
-    profile={"name": "阿岚", "birthday": "03-05"},
-    taboo=("前女友的名字",),
-    recall=(RecallLine("三月初搬了一次家", when="2026-03-01"),),
-    session={"affect": "低落（中）", "topic": "工作"},
-    risk=1, crisis_resources=("心理援助热线 12356",),
-)
-render(bundle)   # {"system": 稳定前缀, "dynamic": 动态段, "recent": [...]}
-```
-
-一条测试守住了它的全部意义：**换轮次、换时间、换召回之后，
-`system_prefix` 必须逐字节一致**；时间 / 召回 / 语汇 / 情绪 / 危机资源
-一项都不许出现在前缀里。
-
-## FTS 一致性
-
-SQLite 触发器里做不了 CJK 分词，所以索引不能由触发器直接维护。折中方案是
-**触发器只标脏**：任何对 `memory_items` / `messages` 的写入都留下一条
-`fts_dirty`，而真正的分词与写索引仍然在 Python 侧。
-
-于是形成闭环：
-
-| 做法 | 结果 |
-|---|---|
-| 走 `db.upsert_*_fts` | 写索引 + 清脏标记 → `verify_fts().ok == True` |
-| 绕过 wrapper 直接写 | 脏标记留下 → `verify_fts()` 报 `missing` / `stale` |
-| 直接删主表 | 索引残影 → 报 `orphan` |
-
-```powershell
-python tools/check_fts.py data/companion.db --fix
-```
-
-`orphan`（主表已删、索引还在）**不会真的被召回**，因为检索 SQL 与主表 JOIN
-——但那只是第二道防线，残影仍会撑大索引，并让任何不走 JOIN 的路径漏出已删内容。
-
-## L1 召回
-
-```python
-from companion.recall import recall
-r = recall(conn, "昨天我们聊了什么", reference_time="2026-11-04T09:00:00Z")
-r.query.axis          # "message"
-[(h.source, h.id) for h in r.hits]        # [("date_message", 1)]
-[h.id for h in r.local_only]              # no_send 的命中只在这里，不进上下文
-r.notes                                   # {"tier0": 1, "memory": 0, ...}
-```
-
-配额：`tier0 ≤ 2 / 记忆文本 ≤ 3 / 原文 ≤ 1`，总量 ≤5。**原文那 1 个位置先预留**——
-否则 tier0 和记忆文本会把 5 个位置吃光，原文路永远命中不到（这解决了
-"三路 2/3/1 相加是 6、截到 5 会随机挤掉一路"的问题）。
-
-## `query_time_resolver` 的行为
-
-```python
-from companion.timequery import resolve
-q = resolve("昨天我们聊了什么", reference_time="2026-11-04T09:00:00Z")
-q.axis        # "message" —— 查消息时间轴，不是事件轴
-q.conf        # 0.95
-q.exact.start # "2026-11-03"
-q.usable      # True
-```
-
-三档阈值（`0.6` / `0.35`）：
-
-| 置信 | 行为 |
-|---|---|
-| ≥ 0.6 | 精确日 + 扩窗（±7 天） |
-| 0.35 – 0.6 | 只给粗窗口（月 / 年范围） |
-| < 0.35 | **不查日期路**，只走文本召回 |
-
-两条容易做错的规则：
-
-- 相对时间锚定**源消息时间**，不是 `now()`；
-- 「3 月 5 号」这种缺年份的表达**保留歧义**，两个候选窗口都返回（从 2026-11 看，最近的是 2027-03-05，不是 2026-03-05）。
-
-## 已经被测试锁住的三条契约
-
-1. **`bm25()` 是负值，越负越相关。** 直接当正分用会筛掉全部结果；
-   `ORDER BY -bm25` 会把最差排最前。正确写法：`relevance = -bm25(...) DESC`。
-2. **时间窗口用区间相交，不用 `BETWEEN`。** `event_start BETWEEN q_start AND q_end`
-   会漏掉「3 月 1—10 日」在 3 月 5 日的查询。
-3. **跨年周年窗口必须拆两段。** 月日字符串 `BETWEEN '12-28' AND '01-05'` 恒为假。
-
-## 已知取舍
-
-- FTS 表存的是分词结果，没有触发器分词，**增删改必须走 `db.upsert_*_fts` /
-  `db.delete_memory_fts`**。绕过去不会静默：`fts_dirty` 会留下记录，
-  `verify_fts()` 与 `tools/check_fts.py` 都能查出来。
-- 单字查询靠索引侧 unigram 兜住，代价是索引体积约 2 倍。
+缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
+结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
