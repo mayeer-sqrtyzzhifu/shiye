@@ -1,0 +1,21 @@
+# 数据与密钥
+data/
+*.db
+*.db-wal
+*.db-shm
+*.key
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# 编辑器
+.idea/
+.vscode/
