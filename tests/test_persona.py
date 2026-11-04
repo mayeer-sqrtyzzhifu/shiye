@@ -11,7 +11,7 @@ from companion.prompt import BUDGET, assemble, estimate_tokens
 def test_default_persona_renders_required_sections():
     text = persona.get().render()
     assert "姐姐" in text
-    assert "## 你的来历" in text
+    assert "## 关于你自己" in text
     assert "## 开头" in text
     assert "## 不要写成什么样" in text
     assert "## 回复的形态" in text
@@ -134,3 +134,4 @@ def test_prefix_stays_byte_stable_with_persona():
 
 def test_persona_keeps_the_no_diagnosis_rule():
     assert "不做诊断" in persona.get().render()
+
