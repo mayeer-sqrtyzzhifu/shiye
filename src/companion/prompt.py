@@ -236,6 +236,11 @@ def build_dynamic_block(
             lines.append(line)
             used += cost
         sections.append("\n".join(lines))
+    else:
+        # 没有召回时明确说"没有"，否则模型会用"我记得……"来填补空白。
+        # 这是评估集 q02 直接暴露出来的失效：先声称记得一部分，再编细节。
+        sections.append("## 记忆状态\n本轮没有召回到相关记忆。不要声称记得具体往事，"
+                        "不要补充细节；不确定就直说不记得。")
 
     if profile_update_note:
         # 档案变更只在会话边界进前缀；会话内走这里，不动前缀（§6.4）

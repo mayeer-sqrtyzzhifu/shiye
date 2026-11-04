@@ -84,8 +84,11 @@ def test_risk_section_only_appears_when_risky():
 
 
 def test_recall_section_absent_when_empty():
-    bundle = assemble(**BASE, now=NOW, user_message="随便聊聊")
-    assert "相关记忆" not in bundle.dynamic_block
+    block = assemble(**BASE, now=NOW, user_message="随便聊聊").dynamic_block
+    assert "## 相关记忆" not in block
+    # 但必须明确告诉模型"这轮没有召回"，否则它会用"我记得"来填空（评估集 q02）
+    assert "记忆状态" in block
+    assert "不要声称记得" in block
 
 
 def test_recent_conversation_has_floor(monkeypatch):
