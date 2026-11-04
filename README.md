@@ -8,8 +8,9 @@
 - **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
 - **M2 之 L1 召回** —— 三路候选（日期 / 记忆文本 / 原文）、配额预留、`no_send` 全路径隔离、档案生日
 - **FTS 四件套** —— 建表 / 写入同步 / 回填 / 一致性校验（脏标记触发器强制）
+- **M3 删除链路** —— 事件簇圈定、三态（hide / blur / purge）、级联、`data_revision`
 
-`python -m pytest` → **56 项全绿**，无需安装任何依赖。
+`python -m pytest` → **69 项全绿**，无需安装任何依赖。
 
 > 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -51,11 +52,13 @@ src/companion/
   datewin.py            区间相交 与 跨年周年窗口（规格里最容易写错的两段 SQL）
   timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
   recall.py             L1 三路召回与配额融合
+  deletion.py           事件簇 / 三态删除 / 级联 / data_revision
 tests/
   test_schema.py        10 项：DDL / 检索方向 / 索引语义
   test_timequery.py     24 项：时间解析规则
   test_recall.py        12 项：三路融合、配额、no_send、档案生日
   test_fts_sync.py      10 项：脏标记 / 回填 / 一致性校验
+  test_deletion.py      13 项：事件簇 / 三态 / 级联 / 版本失效
 tools/check_fts.py      巡检与修复 CLI
 ```
 
