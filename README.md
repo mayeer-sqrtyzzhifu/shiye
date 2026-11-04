@@ -33,7 +33,7 @@
 
 ```powershell
 cd companion
-python -m pytest                      # 206 项，不联网
+python -m pytest -p no:cacheprovider   # 210 项，不联网（不落 .pytest_cache）
 python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
@@ -138,12 +138,12 @@ python web/server.py --port 8765 --data data --open
 
 ```powershell
 pip install sqlcipher3
-python tools/encrypt_db.py data/companion.db      # 明文 → 加密
-python tools/encrypt_db.py data/companion.db --verify-only
+python tools/encrypt_db.py "%LOCALAPPDATA%\shiye\data\companion.db"      # 明文 → 加密
+python tools/encrypt_db.py "%LOCALAPPDATA%\shiye\data\companion.db" --verify-only
 ```
 
 ```python
-conn = db.connect_secure("data/companion.db")     # 自动建密钥 + DPAPI 保护
+conn = db.connect_secure("...\shiye\data\companion.db")  # 自动建密钥 + DPAPI 保护
 ```
 
 ## 备份
@@ -170,6 +170,27 @@ crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new
 
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
+
+## 文件放在哪
+
+**仓库里只有源码。** 数据库、密钥、`.env` 都在用户数据目录：
+
+```
+%LOCALAPPDATA%\shiye\
+  .env                  API key
+  data\companion.db     对话数据库（SQLCipher 加密）
+  data\companion.key    密钥（DPAPI 保护）
+  pycache\              字节码缓存（避免 __pycache__ 落到源码里）
+```
+
+想换位置：设环境变量 `SHIYE_HOME` 即可（启动器会读它）。
+
+```powershell
+$env:SHIYE_HOME = 'D:\somewhere\shiye'
+python web/server.py --open
+```
+
+重置一切：删掉 `%LOCALAPPDATA%\shiye` 整个目录，下次启动会重建。
 
 ## 目录
 
@@ -207,6 +228,8 @@ eval/run_eval.py        评估集与跑批
 - 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
 - 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
 - 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
+
+
 
 
 

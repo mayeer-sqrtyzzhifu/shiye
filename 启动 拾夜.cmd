@@ -18,7 +18,14 @@ echo   关闭浏览器后服务会自动停止；这个窗口可以留着看日�
 echo   想立刻停：按 Ctrl+C 或直接关掉这个窗口。
 echo.
 
-python web\server.py --port 8765 --data data --open
+rem 运行时数据放在用户目录，不进仓库
+if "%LOCALAPPDATA%"=="" set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
+set "SHIYE_HOME=%LOCALAPPDATA%\shiye"
+if not exist "%SHIYE_HOME%\data" mkdir "%SHIYE_HOME%\data"
+rem 别让 __pycache__ 落在源码目录里
+set "PYTHONPYCACHEPREFIX=%SHIYE_HOME%\pycache"
+
+python web\server.py --port 8765 --data "%SHIYE_HOME%\data" --open
 
 if errorlevel 1 (
   echo.
@@ -28,4 +35,5 @@ if errorlevel 1 (
   echo.
   pause
 )
+
 

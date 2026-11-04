@@ -32,7 +32,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from companion import db, extract, persona  # noqa: E402
+from companion import db, extract, paths, persona  # noqa: E402
 from companion.prompt import format_local_moment, local_datetime  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
@@ -53,11 +53,11 @@ BOUNDARIES = (
 class App:
     def __init__(
         self,
-        data_dir: str | Path,
+        data_dir: str | Path | None = None,
         provider_factory=None,
         lifecycle: Lifecycle | None = None,
     ) -> None:
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir) if data_dir is not None else paths.data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "companion.db"
         self.key_path = self.data_dir / "companion.key"
@@ -422,7 +422,7 @@ def create_server(
     host: str = "127.0.0.1",
     port: int = 8765,
     *,
-    data_dir: str | Path = ROOT / "data",
+    data_dir: str | Path | None = None,
     provider_factory=None,
     lifecycle: Lifecycle | None = None,
 ) -> tuple[ThreadingHTTPServer, App]:
@@ -449,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="companion 最小网页前端")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--data", default=str(ROOT / "data"))
+    parser.add_argument("--data", default=str(paths.data_dir()), help="运行期数据目录")
     parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
     parser.add_argument("--idle-timeout", type=float, default=90.0,
                         help="页面多久没心跳就停（秒）")
@@ -513,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

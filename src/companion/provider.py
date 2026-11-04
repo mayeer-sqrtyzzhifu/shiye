@@ -27,19 +27,27 @@ try:
 except ImportError:  # pragma: no cover
     httpx = None  # type: ignore
 
-ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+from . import paths  # noqa: E402
+
+ENV_FILE = paths.env_file()
 
 
-def load_env(path: Path = ENV_FILE) -> dict[str, str]:
-    """极简 .env 读取；已存在的环境变量优先（便于 CI / 临时覆盖）。"""
+def load_env(path: Path | None = None) -> dict[str, str]:
+    """极简 .env 读取；已存在的环境变量优先（便于 CI / 临时覆盖）。
+
+    默认依次读用户数据目录的 .env、再读仓库根目录的旧 .env（兼容早期布局）。
+    """
+    candidates = [path] if path is not None else [ENV_FILE, paths.legacy_env_file()]
     values: dict[str, str] = {}
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
+    for candidate in candidates:
+        if candidate is None or not candidate.exists():
+            continue
+        for line in candidate.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            values[key.strip()] = value.strip()
+            values.setdefault(key.strip(), value.strip())
     for key, value in values.items():
         os.environ.setdefault(key, value)
     return values
@@ -220,3 +228,4 @@ class FakeProvider:
             finish_reason="stop",
             model="fake",
         )
+

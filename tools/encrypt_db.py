@@ -2,8 +2,8 @@
 
 用法::
 
-    python tools/encrypt_db.py data/companion.db --key-file data/companion.key
-    python tools/encrypt_db.py data/companion.db --verify-only
+    python tools/encrypt_db.py %LOCALAPPDATA%\shiye\data\companion.db --key-file %LOCALAPPDATA%\shiye\data\companion.key
+    python tools/encrypt_db.py %LOCALAPPDATA%\shiye\data\companion.db --verify-only
 
 行为：
 1. 用 SQLCipher 以**空 key** 打开明文源（``PRAGMA key = ''`` 即不加密）；
@@ -123,3 +123,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

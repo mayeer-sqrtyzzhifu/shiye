@@ -2,9 +2,9 @@
 
 用法::
 
-    python tools/check_fts.py data/companion.db
-    python tools/check_fts.py data/companion.db --fix
-    python tools/check_fts.py data/companion.db --fix --full
+    python tools/check_fts.py %LOCALAPPDATA%\shiye\data\companion.db
+    python tools/check_fts.py %LOCALAPPDATA%\shiye\data\companion.db --fix
+    python tools/check_fts.py %LOCALAPPDATA%\shiye\data\companion.db --fix --full
 
 退出码：0 = 干净，1 = 有不一致（``--fix`` 后仍不一致也算失败）。
 
@@ -50,3 +50,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
