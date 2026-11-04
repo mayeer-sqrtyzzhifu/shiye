@@ -2,23 +2,30 @@
 
 对应规格：[`../陪伴Agent架构-v2-决策收敛与落地规格.md`](../陪伴Agent架构-v2-决策收敛与落地规格.md)（v2.1）
 
-当前进度：
+## 一键启动
+
+**双击 `启动 Mochi.cmd`** —— 检查 python、启动服务、自动打开浏览器；
+出错时停住窗口并给出原因（端口被占 / 缺依赖）。
+
+浏览器地址是 <http://127.0.0.1:8765/>。**直接双击 `web/index.html` 是连不上的**，
+那是 `file://`，页面会自己提示你去点 http 地址。
+
+## 当前进度
 
 - **M1 数据底座** —— §8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索
 - **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
-- **M2 之 L1 召回** —— 三路候选、配额预留、`no_send` 全路径隔离、档案生日
+- **M2 之 L1 召回** —— 三路候选、配额预留、`no_send` 全路径隔离、档案生日、alias 归一
 - **FTS 四件套** —— 建表 / 写入同步 / 回填 / 一致性校验（脏标记触发器强制）
 - **M3 删除链路** —— 事件簇圈定、三态（hide / blur / purge）、级联、`data_revision`
 - **Prompt 拼装** —— 稳定前缀 / per-turn 动态段分离、分段预算、`untrusted_text()` 注入防护
 - **真实 provider + 一轮对话** —— OpenAI 兼容流式、reasoning/usage 记账、端到端落库
 - **SQLCipher 加密与备份** —— DPAPI 保护密钥、口令备份、明文库迁移
 - **L4 异步抽取** —— 带证据的记忆、语汇候选、幂等任务、taboo 隔离
-- **关系语汇消费方** —— alias 归一化补漏召回、命中注入、注入/采用分开记账
-- **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
 - **L0 情绪/风险标志位** —— 隐晦危机表达可触发、谐谑不误判、危机资源离线常量
-- **最小网页前端** —— stdlib SSE 流式、单文件页面、无框架依赖
+- **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
+- **网页前端 + 生命周期** —— stdlib SSE 流式、页面关掉就自动停
 
-`python -m pytest` → **96 项全绿**，无需安装任何依赖（真实调用走 `tools/live_smoke.py`）。
+`python -m pytest` → **181 项全绿**，单测不联网。
 
 > 规格文档在父目录，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -26,31 +33,49 @@
 
 ```powershell
 cd companion
-python -m pytest                      # 96 项，不联网
+python -m pytest                      # 181 项，不联网
 python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
-python eval/run_eval.py --no-judge    # 只跑确定性槽位，不花 token
-python web/server.py --port 8765      # 网页版 → http://127.0.0.1:8765/
+python eval/run_eval.py --no-judge     # 只跑确定性槽位，不花 token
+python web/server.py --port 8765 --open
 ```
 
 `.env`（已 gitignore）：
 
-```
+```ini
 COMPANION_API_KEY=sk-...
 COMPANION_BASE_URL=https://api.deepseek.com
 COMPANION_MODEL=deepseek-flash
 ```
 
+## 服务什么时候停
+
+页面关了不该留一个空跑的进程。三个条件任一成立就退出（退出码 0）：
+
+| 条件 | 触发 | 默认 |
+|---|---|---|
+| **bye** | 页面 `pagehide` 时发 `sendBeacon('/api/bye')` | 延迟 3s 停（刷新会撤销） |
+| **idle** | 页面每 20s 发一次 `/api/ping`，断了 | 90s |
+| **max** | 硬上限，防锁屏没关浏览器 | 12 小时 |
+| never-opened | 启动后一直没人访问 | 120s |
+
+```powershell
+python web/server.py --idle-timeout 300        # 想长时间挂着看日志
+python web/server.py --no-lifecycle            # 只能 Ctrl+C 结束
+```
+
+规则在 `web/lifecycle.py` 的 `decide_stop()`，是纯函数，单测覆盖 7 种组合；
+真实进程也验证过三种原因：`never-opened` / `bye` / `idle`。
+
 ## 网页版
 
-`powershell
-python web/server.py --port 8765 --data data
-# 打开 http://127.0.0.1:8765/
-`
+```powershell
+python web/server.py --port 8765 --data data --open
+```
 
-只监听 127.0.0.1，不对外暴露。页面是单文件（web/index.html），
-回复走 SSE 流式；/api/health 会如实报当前是 sqlcipher 还是 plaintext-dev。
+只监听 `127.0.0.1`，不对外暴露。页面是单文件（`web/index.html`），回复走 SSE 流式；
+`/api/health` 会如实报当前是 `sqlcipher` 还是 `plaintext-dev`。
 
 ## 加密（已落地）
 
@@ -63,7 +88,6 @@ python web/server.py --port 8765 --data data
 
 ```powershell
 pip install sqlcipher3
-
 python tools/encrypt_db.py data/companion.db      # 明文 → 加密
 python tools/encrypt_db.py data/companion.db --verify-only
 ```
@@ -97,7 +121,39 @@ crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
 
+## 目录
 
+```
+schema/001_init.sql     全部 DDL
+schema/002_profile.sql  档案槽位（birthday / calendar / name / timezone）
+schema/003_fts_sync.sql 脏标记触发器：绕过 wrapper 会被查出来
+schema/004_session.sql  messages.session_id（会话隔离）
+src/companion/
+  db.py                 连接 / PRAGMA / 迁移 / FTS 同步与校验 / 文本检索
+  crypto.py             DPAPI 密钥、口令备份、跨机恢复
+  fts.py                CJK 分词（索引侧 unigram+bigram，查询侧 bigram）
+  datewin.py            区间相交 与 跨年周年窗口
+  timequery.py          双时间轴 + 三档置信 + 歧义保留
+  recall.py             三路召回与配额融合（含 alias 归一）
+  lexicon.py            语汇命中 / 查询扩展 / 注入记账
+  deletion.py           事件簇 / 三态删除 / 级联 / data_revision
+  signals.py            L0 情绪与风险标志位
+  prompt.py             稳定前缀 + 动态段 + 注入防护 + 本地时间
+  provider.py           OpenAI 兼容流式 provider（+ FakeProvider）
+  turn.py               一轮对话的编排
+  extract.py            L4 异步抽取（证据契约 / 幂等）
+web/
+  server.py             stdlib HTTP + SSE
+  lifecycle.py          什么时候停
+  index.html            单文件页面
+tools/                  live_smoke / check_fts / encrypt_db
+eval/run_eval.py        评估集与跑批
+```
 
+## 已知取舍
 
-
+- FTS 存的是分词结果，没有触发器分词，**增删改必须走 `db.upsert_*_fts`**。
+  绕过去不会静默：`fts_dirty` 会留下记录，`tools/check_fts.py` 能查出来。
+- 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
+- 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
+- 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
