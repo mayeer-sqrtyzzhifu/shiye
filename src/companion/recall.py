@@ -21,7 +21,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 
-from . import db
+from . import db, lexicon
 from .datewin import overlaps_sql
 from .timequery import CONF_MID, TimeQuery, resolve
 
@@ -46,6 +46,7 @@ class RecallResult:
     query: TimeQuery
     hits: tuple[Hit, ...] = ()
     local_only: tuple[Hit, ...] = ()
+    lexicon: tuple[lexicon.LexiconMatch, ...] = ()
     notes: dict[str, int] = field(default_factory=dict)
 
 
@@ -130,6 +131,9 @@ def recall(
         profile = db.get_profile(conn)
     query = resolve(text, reference_time=reference_time, profile=profile)
 
+    # 语汇命中 + alias 归一：扩展**检索**用的文本，时间解析仍用原句
+    lexicon_matches, query_text = lexicon.load_for_prompt(conn, text)
+
     tier0: list[Hit] = []
     tier0.extend(_event_hits(conn, query))
     if len(tier0) < TIER0_LIMIT:
@@ -145,7 +149,8 @@ def recall(
     memory_text = [
         Hit("memory", i, 1, s, "fts_memory")
         for i, s in db.search_memories(
-            conn, text, min_relevance=tau_memory, limit=TEXT_LIMIT_MEMORY + len(taken_memory)
+            conn, query_text, min_relevance=tau_memory,
+            limit=TEXT_LIMIT_MEMORY + len(taken_memory),
         )
         if i not in taken_memory
     ][:TEXT_LIMIT_MEMORY]
@@ -153,7 +158,7 @@ def recall(
     message_scored = [
         (i, s)
         for i, s in db.search_messages(
-            conn, text, min_relevance=tau_message,
+            conn, query_text, min_relevance=tau_message,
             limit=TEXT_LIMIT_MESSAGE + len(taken_message),
         )
         if i not in taken_message
@@ -176,6 +181,8 @@ def recall(
         query=query,
         hits=hits[:TOTAL_LIMIT],
         local_only=local_only,
+        lexicon=lexicon_matches,
         notes={"tier0": len(tier0), "memory": min(memory_slots, len(memory_text)),
-               "message": message_slots, "local_only": len(local_only)},
+               "message": message_slots, "local_only": len(local_only),
+               "lexicon": len(lexicon_matches)},
     )

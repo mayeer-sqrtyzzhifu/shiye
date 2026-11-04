@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from . import db
+from . import lexicon as lex_mod
 from .prompt import (
     LexiconLine,
     PromptBundle,
@@ -144,6 +145,14 @@ def run_turn(
     recall_lines = _materialize_recall(conn, recalled)
     turns = _recent_turns(conn)
 
+    # 命中的语汇进动态段；调用方显式传入时以调用方为准（便于测试/手工注入）
+    matched_lexicon = tuple(
+        LexiconLine(surface=m.surface, meaning=m.meaning, kind=m.kind,
+                    usage_note=m.usage_note)
+        for m in recalled.lexicon
+    )
+    lexicon_lines = lexicon or matched_lexicon
+
     bundle = assemble(
         persona=persona,
         now=now,
@@ -154,7 +163,7 @@ def run_turn(
         capabilities=capabilities,
         recent=turns,
         recall=recall_lines,
-        lexicon=lexicon,
+        lexicon=lexicon_lines,
         session={**session, "timezone": profile.get("timezone")},
         risk=risk,
         crisis_resources=crisis_resources,
@@ -195,8 +204,10 @@ def run_turn(
                 session_id,
                 turn_index=turn_index,
                 recall_ids=[h.id for h in recalled.hits if h.kind == "memory"],
-                lexicon_ids=[],  # 语汇注入的记账等 §1.2 的 use_count 一并实现
+                lexicon_ids=[m.id for m in recalled.lexicon],
             )
+            # 记账是"被注入"，不是"被模型采用"（§1.2 闸门四）
+            lex_mod.note_use(conn, [m.id for m in recalled.lexicon], injected=True)
         persisted = True
 
     return TurnResult(
