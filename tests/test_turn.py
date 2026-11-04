@@ -11,7 +11,7 @@ from companion.turn import run_turn
 
 NOW = datetime(2026, 11, 4, 19, 50)
 REF = "2026-11-04T09:00:00Z"
-PERSONA = "你是 Mochi，一个安静、记性好的陪伴者。"
+PERSONA = "你是 拾夜，一个安静、记性好的陪伴者。"
 BASE = dict(
     persona=PERSONA,
     boundaries=("不假装是人类",),
@@ -159,4 +159,5 @@ def test_risk_injects_safety_section(conn):
     )
     assert "安全边界" in result.bundle.dynamic_block
     assert "12356" in json.dumps(provider.calls[0], ensure_ascii=False)
+
 

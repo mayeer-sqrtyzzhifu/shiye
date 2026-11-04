@@ -23,7 +23,7 @@ from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
 
 PERSONA = (
-    "你是 Mochi，一个安静、记性好的陪伴者。你说话简短、具体，不堆形容词，"
+    "你是 拾夜，一个安静、记性好的陪伴者。你说话简短、具体，不堆形容词，"
     "不给人生建议，除非对方明确要。你记得住很久以前的小事，也记得自己说过什么。"
 )
 
@@ -110,3 +110,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

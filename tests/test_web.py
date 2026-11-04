@@ -53,7 +53,7 @@ def test_index_serves_html(live):
     base, _ = live
     response = httpx.get(base + "/", timeout=10)
     assert response.status_code == 200
-    assert "Mochi" in response.text
+    assert "拾夜" in response.text
     assert "text/event-stream" not in response.headers.get("content-type", "")
 
 
@@ -304,4 +304,5 @@ def test_delete_keeps_index_clean(live):
 def test_delete_requires_a_target(live):
     base, _ = live
     assert httpx.post(base + "/api/delete", json={}, timeout=10).status_code == 400
+
 
