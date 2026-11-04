@@ -12,10 +12,32 @@ def test_default_persona_renders_required_sections():
     text = persona.get().render()
     assert "姐姐" in text
     assert "## 你的来历" in text
-    assert "## 说话参数" in text
-    assert "## 你的方法" in text
+    assert "## 口吻" in text
+    assert "## 不要写成什么样" in text
+    assert "## 回复的形态" in text
+    assert "## 量化参照" in text
     assert "不要这样说" in text
     assert "风格参考" in text
+
+
+def test_persona_forbids_the_two_beat_template():
+    """「共情一句 + 问一句」是最强的 AI 标记，人格里必须点名禁止。"""
+    avoid = persona.get().avoid
+    assert "两段式" in avoid
+    assert "问句" in avoid
+    assert "不是…而是…" in avoid
+    assert "三连排比" in avoid
+    assert "复述" in avoid
+
+
+def test_examples_vary_in_shape():
+    """示范不能全是「接住 + 提问」，否则模型只会这一种。"""
+    examples = persona.get().examples
+    with_question = sum(1 for _, a in examples if "？" in a)
+    assert with_question < len(examples), "至少有一条不带问句"
+    assert with_question <= len(examples) * 0.6, "带问句的比例不该超过六成"
+    # 至少有一条极短回复（只应一声）
+    assert any(len(a) <= 12 for _, a in examples)
 
 
 def test_dimensions_are_quantified():
@@ -25,7 +47,7 @@ def test_dimensions_are_quantified():
     numeric = [d for d in dims if any(ch.isdigit() for ch in d)]
     assert len(numeric) >= 5
     joined = "\n".join(dims)
-    assert "长度" in joined and "提问" in joined and "建议" in joined
+    assert "长度" in joined and "问句" in joined and "建议" in joined
 
 
 def test_contrasts_pair_bad_with_good():
