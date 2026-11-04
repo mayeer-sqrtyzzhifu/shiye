@@ -2,7 +2,14 @@
 
 对应规格：[`../陪伴Agent架构-v2-决策收敛与落地规格.md`](../陪伴Agent架构-v2-决策收敛与落地规格.md)（v2.1）
 
-当前进度：**M1 数据底座**（§8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索）。
+当前进度：
+
+- **M1 数据底座** —— §8 治理表 + §3.2 记忆时间字段 + §1.2 语汇索引 + FTS5 中文检索
+- **M2 之 `query_time_resolver`** —— L0 同步时间解析（§3.3 / §3.4 全部规则）
+
+`python -m pytest` → **34 项全绿**，无需安装任何依赖。
+
+> 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
 ## 快速开始
 
@@ -38,8 +45,35 @@ src/companion/
   db.py                 连接 / PRAGMA / schema / FTS 同步 wrapper / 最小检索
   fts.py                CJK 分词（索引侧 unigram+bigram，查询侧 bigram）
   datewin.py            区间相交 与 跨年周年窗口（规格里最容易写错的两段 SQL）
-tests/test_schema.py    10 项回归，覆盖评审提出的 4 个真实缺陷
+  timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
+tests/
+  test_schema.py        10 项：DDL / 检索方向 / 索引语义
+  test_timequery.py     24 项：时间解析规则
 ```
+
+## `query_time_resolver` 的行为
+
+```python
+from companion.timequery import resolve
+q = resolve("昨天我们聊了什么", reference_time="2026-11-04T09:00:00Z")
+q.axis        # "message" —— 查消息时间轴，不是事件轴
+q.conf        # 0.95
+q.exact.start # "2026-11-03"
+q.usable      # True
+```
+
+三档阈值（`0.6` / `0.35`）：
+
+| 置信 | 行为 |
+|---|---|
+| ≥ 0.6 | 精确日 + 扩窗（±7 天） |
+| 0.35 – 0.6 | 只给粗窗口（月 / 年范围） |
+| < 0.35 | **不查日期路**，只走文本召回 |
+
+两条容易做错的规则：
+
+- 相对时间锚定**源消息时间**，不是 `now()`；
+- 「3 月 5 号」这种缺年份的表达**保留歧义**，两个候选窗口都返回（从 2026-11 看，最近的是 2027-03-05，不是 2026-03-05）。
 
 ## 已经被测试锁住的三条契约
 
