@@ -25,11 +25,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+# 既能 `python web/server.py` 直接跑，也能 `import web.server`（测试用）
+for _p in (str(ROOT), str(ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from companion import db, extract  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
+from web.lifecycle import Lifecycle, Watchdog  # noqa: E402
 
 INDEX = Path(__file__).with_name("index.html")
 
@@ -46,7 +50,12 @@ BOUNDARIES = (
 
 
 class App:
-    def __init__(self, data_dir: str | Path, provider_factory=None) -> None:
+    def __init__(
+        self,
+        data_dir: str | Path,
+        provider_factory=None,
+        lifecycle: Lifecycle | None = None,
+    ) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.data_dir / "companion.db"
@@ -55,12 +64,26 @@ class App:
         self.write_lock = threading.Lock()
         self._provider = None
         self._provider_lock = threading.Lock()
+        self._server = None
+        self.stop_reason: str | None = None
+        self.watchdog = Watchdog(lifecycle or Lifecycle(), self._on_stop)
 
         conn = self.connect()
         try:
             db.apply_schema(conn)
         finally:
             conn.close()
+
+    # ── 生命周期
+    def attach_server(self, httpd) -> None:
+        self._server = httpd
+        self.watchdog.start()
+
+    def _on_stop(self, reason: str) -> None:
+        print(f"\n[lifecycle] 停止原因：{reason}")
+        self.stop_reason = reason
+        if self._server is not None:
+            threading.Thread(target=self._server.shutdown, daemon=True).start()
 
     def connect(self):
         return db.connect_secure(self.db_path, key_file=self.key_path)
@@ -112,6 +135,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/health":
             import os
 
+            self.app.watchdog.touch()
             payload = {
                 "ok": True,
                 "security": db.security_mode("keyed") if db.sqlcipher_available() else "plaintext-dev",
@@ -121,13 +145,28 @@ class Handler(BaseHTTPRequestHandler):
             }
             self._json(payload)
             return
+        if self.path == "/api/ping":
+            self.app.watchdog.touch()
+            self._json({
+                "ok": True,
+                "idle_timeout": self.app.watchdog.policy.idle_timeout,
+            })
+            return
         self._json({"error": "not found"}, status=404)
 
     # ── POST
     def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/bye":
+            # 页面关闭时用 sendBeacon 发过来；延迟几秒再停，刷新页面可以撤销
+            self.app.watchdog.schedule_stop()
+            self._json({"ok": True, "stop_in": self.app.watchdog.policy.bye_grace})
+            return
+
         if self.path != "/api/chat":
             self._json({"error": "not found"}, status=404)
             return
+
+        self.app.watchdog.touch()
 
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -223,11 +262,25 @@ def create_server(
     *,
     data_dir: str | Path = ROOT / "data",
     provider_factory=None,
+    lifecycle: Lifecycle | None = None,
 ) -> tuple[ThreadingHTTPServer, App]:
-    app = App(data_dir, provider_factory=provider_factory)
+    app = App(data_dir, provider_factory=provider_factory, lifecycle=lifecycle)
     handler = type("BoundHandler", (Handler,), {"app": app})
     httpd = ThreadingHTTPServer((host, port), handler)
+    app.attach_server(httpd)
     return httpd, app
+
+
+def _existing_instance(port: int, host: str = "127.0.0.1") -> bool:
+    """端口上已经有我们的服务？有的话就别再起一个。"""
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/api/health", timeout=1.5) as resp:
+            return b'"ok"' in resp.read(200)
+    except (urllib.error.URLError, OSError):
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -236,13 +289,50 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data", default=str(ROOT / "data"))
     parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
+    parser.add_argument("--idle-timeout", type=float, default=90.0,
+                        help="页面多久没心跳就停（秒）")
+    parser.add_argument("--startup-grace", type=float, default=120.0,
+                        help="启动后多久没人访问就停（秒）")
+    parser.add_argument("--max-lifetime", type=float, default=12 * 3600.0,
+                        help="硬上限（秒）")
+    parser.add_argument("--no-lifecycle", action="store_true",
+                        help="关掉自动停止，只能 Ctrl+C 结束")
     args = parser.parse_args(argv)
 
-    httpd, app = create_server(args.host, args.port, data_dir=args.data)
-    url = f"http://{args.host}:{httpd.server_address[1]}/"
+    url = f"http://{args.host}:{args.port}/"
+
+    # 已经有一个在跑：直接开浏览器，不再起第二个
+    if _existing_instance(args.port, args.host):
+        print(f"服务已在运行：{url}")
+        if args.open:
+            import webbrowser
+
+            webbrowser.open(url)
+        return 0
+
+    policy = Lifecycle(
+        idle_timeout=args.idle_timeout,
+        startup_grace=args.startup_grace,
+        max_lifetime=args.max_lifetime,
+        enabled=not args.no_lifecycle,
+    )
+    try:
+        httpd, app = create_server(
+            args.host, args.port, data_dir=args.data, lifecycle=policy
+        )
+    except OSError as exc:
+        print(f"端口 {args.port} 无法绑定：{exc}", file=sys.stderr)
+        print("可能被别的程序占用；换个端口：--port 8766", file=sys.stderr)
+        return 1
+
     print(f"db      : {app.db_path}（{db.security_mode('keyed') if db.sqlcipher_available() else 'plaintext-dev'}）")
     print(f"listen  : {url}")
     print("提示    : 请访问上面的 http 地址；直接双击 web/index.html 是连不上的。")
+    if policy.enabled:
+        print(f"自动停止: 页面关闭/刷新后退 {policy.bye_grace:.0f}s；"
+              f"心跳断 {policy.idle_timeout:.0f}s；最长 {policy.max_lifetime/3600:.0f}h")
+    else:
+        print("自动停止: 已关闭（Ctrl+C 结束）")
 
     if args.open:
         import webbrowser
@@ -252,9 +342,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nbye")
+        print("\n[lifecycle] 停止原因：ctrl-c")
     finally:
         httpd.server_close()
+        app.watchdog.stop()
     return 0
 
 

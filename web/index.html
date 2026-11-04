@@ -97,10 +97,26 @@ if (!servedOverHttp) {
     "（同一个地址，不是双击打开的 html）。";
   sendBtn.disabled = true;
   input.disabled = true;
+} else {
+  ping();
+  setInterval(ping, 20000);
 }
 
-function addRow(role, text) {
-  const row = document.createElement("div");
+// ── 生命周期：让服务知道人还在不在
+// 心跳：页面开着就每 20 秒 ping；服务端心跳断了会自动停。
+async function ping() {
+  try { await fetch("/api/ping", { cache: "no-store" }); } catch (_) { /* 服务已停就算了 */ }
+}
+// 关页面/刷新：告诉服务端准备停；延迟 3 秒，刷新的话下一次 ping 会撤销它。
+window.addEventListener("pagehide", () => {
+  try { navigator.sendBeacon("/api/bye", ""); } catch (_) { /* 无视 */ }
+});
+// 从后台标签切回来立刻补一次，撤销可能已挂起的停止。
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) ping();
+});
+
+function addRow(role, text) {  const row = document.createElement("div");
   row.className = "row " + role;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
