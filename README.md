@@ -9,8 +9,9 @@
 - **M2 之 L1 召回** —— 三路候选（日期 / 记忆文本 / 原文）、配额预留、`no_send` 全路径隔离、档案生日
 - **FTS 四件套** —— 建表 / 写入同步 / 回填 / 一致性校验（脏标记触发器强制）
 - **M3 删除链路** —— 事件簇圈定、三态（hide / blur / purge）、级联、`data_revision`
+- **Prompt 拼装** —— 稳定前缀 / per-turn 动态段分离、分段预算、`untrusted_text()` 注入防护
 
-`python -m pytest` → **69 项全绿**，无需安装任何依赖。
+`python -m pytest` → **86 项全绿**，无需安装任何依赖。
 
 > 规格文档在父目录 [``../陪伴Agent架构-v2-决策收敛与落地规格.md``](../陪伴Agent架构-v2-决策收敛与落地规格.md)，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -53,14 +54,39 @@ src/companion/
   timequery.py          query_time_resolver：双时间轴 + 三档置信 + 歧义保留
   recall.py             L1 三路召回与配额融合
   deletion.py           事件簇 / 三态删除 / 级联 / data_revision
+  prompt.py             稳定前缀 + per-turn 动态段 + 注入防护
 tests/
   test_schema.py        10 项：DDL / 检索方向 / 索引语义
   test_timequery.py     24 项：时间解析规则
   test_recall.py        12 项：三路融合、配额、no_send、档案生日
   test_fts_sync.py      10 项：脏标记 / 回填 / 一致性校验
   test_deletion.py      13 项：事件簇 / 三态 / 级联 / 版本失效
+  test_prompt.py        17 项：前缀稳定性 / 段序 / 预算 / 注入防护
 tools/check_fts.py      巡检与修复 CLI
 ```
+
+## Prompt 拼装
+
+```python
+from companion.prompt import assemble, render
+
+bundle = assemble(
+    persona="你是 Mochi……",
+    now=datetime(2026, 11, 4, 19, 50),
+    user_message="今天好累",
+    boundaries=("不假装是人类",),
+    profile={"name": "阿岚", "birthday": "03-05"},
+    taboo=("前女友的名字",),
+    recall=(RecallLine("三月初搬了一次家", when="2026-03-01"),),
+    session={"affect": "低落（中）", "topic": "工作"},
+    risk=1, crisis_resources=("心理援助热线 12356",),
+)
+render(bundle)   # {"system": 稳定前缀, "dynamic": 动态段, "recent": [...]}
+```
+
+一条测试守住了它的全部意义：**换轮次、换时间、换召回之后，
+`system_prefix` 必须逐字节一致**；时间 / 召回 / 语汇 / 情绪 / 危机资源
+一项都不许出现在前缀里。
 
 ## FTS 一致性
 
