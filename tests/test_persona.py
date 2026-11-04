@@ -11,9 +11,34 @@ from companion.prompt import BUDGET, assemble, estimate_tokens
 def test_default_persona_renders_required_sections():
     text = persona.get().render()
     assert "姐姐" in text
-    assert "## 说话方式" in text
+    assert "## 你的来历" in text
+    assert "## 说话参数" in text
     assert "## 你的方法" in text
+    assert "不要这样说" in text
     assert "风格参考" in text
+
+
+def test_dimensions_are_quantified():
+    """“温柔一点”没法执行；参数得带数字。"""
+    dims = persona.get().dimensions
+    assert len(dims) >= 6
+    numeric = [d for d in dims if any(ch.isdigit() for ch in d)]
+    assert len(numeric) >= 5
+    joined = "\n".join(dims)
+    assert "长度" in joined and "提问" in joined and "建议" in joined
+
+
+def test_contrasts_pair_bad_with_good():
+    pairs = persona.get().contrasts
+    assert len(pairs) >= 4
+    for bad, good in pairs:
+        assert bad.strip() and good.strip()
+        assert bad != good
+        assert len(good) <= 30
+
+
+def test_at_least_a_dozen_examples():
+    assert len(persona.get().examples) >= 12
 
 
 NEGATIONS = ("不", "别", "禁止", "而不是")

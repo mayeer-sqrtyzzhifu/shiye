@@ -11,7 +11,7 @@
 ------------
 | 区块 | 上限 |
 |---|---|
-| 稳定前缀 | 1200 |
+| 稳定前缀 | 1800 |
 | 本轮用户消息 | 200 |
 | 近期对话 | **350 保底**（先分配，永不因别的区块被砍） |
 | 召回记忆 | 200 |
@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 # ───────────────────────────────────────── 预算
 
 BUDGET: dict[str, int] = {
-    "prefix": 1200,
+    "prefix": 1800,
     "user_message": 200,
     "recent": 350,
     "recall": 200,
@@ -489,6 +489,7 @@ def render(bundle: PromptBundle) -> dict:
         "dynamic": bundle.dynamic_block,
         "recent": lines,
     }
+
 
 
 
