@@ -173,6 +173,12 @@ def delete_memory_fts(conn: sqlite3.Connection, memory_ids: list[int]) -> None:
     _clear_dirty(conn, "memory_items", memory_ids)
 
 
+def delete_message_fts(conn: sqlite3.Connection, message_ids: list[int]) -> None:
+    for message_id in message_ids:
+        conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (message_id,))
+    _clear_dirty(conn, "messages", message_ids)
+
+
 # ───────────────────────────────────────── FTS 一致性校验
 
 @dataclass(frozen=True)
