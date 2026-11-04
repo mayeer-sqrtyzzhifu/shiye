@@ -15,6 +15,13 @@
     font: 15px/1.65 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     display: flex; flex-direction: column; height: 100vh;
   }
+  #banner {
+    padding: 10px 20px; background: #3a1f1f; color: #ffd9d9;
+    border-bottom: 1px solid #6b2b2b; font-size: 13px; line-height: 1.7;
+  }
+  #banner[hidden] { display: none; }
+  #banner code { background: #522a2a; padding: 1px 6px; border-radius: 4px; }
+  #banner a { color: #ffd9d9; }
   header {
     padding: 12px 20px; border-bottom: 1px solid var(--line);
     display: flex; align-items: center; gap: 12px; color: var(--muted);
@@ -55,18 +62,8 @@
 </style>
 </head>
 <body>
-  .typing::after { content: "▍"; animation: blink 1s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  #banner {
-    padding: 10px 20px; background: #3a1f1f; color: #ffd9d9;
-    border-bottom: 1px solid #6b2b2b; font-size: 13px; line-height: 1.7;
-  }
-  #banner code { background: #522a2a; padding: 1px 6px; border-radius: 4px; }
-  #banner a { color: #ffd9d9; }
-</style>
-</head>
-<body>
 <div id="banner" hidden></div>
+
 <header>
   <b>Mochi</b>
   <span>本地 · 加密存储</span>
@@ -81,24 +78,23 @@
 </form>
 
 <script>
-const stream = document.getElementById("stream");
+const streamEl = document.getElementById("stream");
 const form = document.getElementById("composer");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const stateEl = document.getElementById("state");
 const sessionId = "web-" + Math.random().toString(36).slice(2, 10);
 
-// 用 file:// 直接打开时，fetch("/api/chat") 会变成 file:///api/chat 并失败。
-// 与其弹一个看不懂的 "Failed to fetch"，不如直接把用法写在页面上。
+// 用 file:// 打开时 fetch("/api/chat") 会变成 file:///api/chat 并失败。
+// 与其弹 "Failed to fetch"，不如直接把用法写在页面上。
 const servedOverHttp = location.protocol === "http:" || location.protocol === "https:";
 if (!servedOverHttp) {
   const banner = document.getElementById("banner");
   banner.hidden = false;
-  banner.innerHTML =
-    "这个页面是<strong>直接打开文件</strong>的，连不到本地服务。" +
-    "请先运行 <code>python web/server.py --port 8765</code>，" +
-    "然后访问 <a href='http://127.0.0.1:8765/'>http://127.0.0.1:8765/</a>" +
-    "（同样的地址，不是双击打开的 html）。";
+  banner.textContent =
+    "这个页面是直接打开文件的，连不到本地服务。请先运行 " +
+    "python web/server.py --port 8765，然后访问 http://127.0.0.1:8765/ " +
+    "（同一个地址，不是双击打开的 html）。";
   sendBtn.disabled = true;
   input.disabled = true;
 }
@@ -110,8 +106,8 @@ function addRow(role, text) {
   bubble.className = "bubble";
   bubble.textContent = text;
   row.appendChild(bubble);
-  stream.appendChild(row);
-  stream.scrollTop = stream.scrollHeight;
+  streamEl.appendChild(row);
+  streamEl.scrollTop = streamEl.scrollHeight;
   return bubble;
 }
 
@@ -154,13 +150,13 @@ async function send(text) {
       buffer = parts.pop();
 
       for (const part of parts) {
-        const line = part.split("\n").find(l => l.startsWith("data: "));
+        const line = part.split("\n").find((l) => l.startsWith("data: "));
         if (!line) continue;
         const event = JSON.parse(line.slice(6));
 
         if (event.type === "delta") {
           bubble.textContent += event.text;
-          stream.scrollTop = stream.scrollHeight;
+          streamEl.scrollTop = streamEl.scrollHeight;
         } else if (event.type === "done") {
           bubble.classList.remove("typing");
           addMeta(bubble, event);

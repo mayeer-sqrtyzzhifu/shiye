@@ -36,6 +36,32 @@ def test_index_serves_html(live):
     assert "text/event-stream" not in response.headers.get("content-type", "")
 
 
+def test_index_html_is_structurally_unique():
+    """防止样式/脚本块被重复插入 —— 那会把 CSS 文本直接显示在页面上。"""
+    from web.server import INDEX
+
+    html = INDEX.read_text(encoding="utf-8")
+    assert html.count("<style>") == 1
+    assert html.count("</style>") == 1
+    assert html.count("</head>") == 1
+    assert html.count("<body>") == 1
+    assert html.count("</html>") == 1
+    assert html.count("<script>") == 1
+    assert html.count("<script>") == html.count("</script>")
+
+    body = html[html.index("<body>"):]
+    assert ".typing::after" not in body      # CSS 不许漏进 body
+    assert "@keyframes" not in body
+
+
+def test_served_page_matches_file(live):
+    base, _ = live
+    from web.server import INDEX
+
+    response = httpx.get(base + "/", timeout=10)
+    assert response.content == INDEX.read_bytes()
+
+
 def test_health_reports_mode(live):
     base, _ = live
     payload = httpx.get(base + "/api/health", timeout=10).json()
