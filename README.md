@@ -14,6 +14,7 @@
 - **SQLCipher 加密与备份** —— DPAPI 保护密钥、口令备份、明文库迁移
 - **L4 异步抽取** —— 带证据的记忆、语汇候选、幂等任务、taboo 隔离
 - **关系语汇消费方** —— alias 归一化补漏召回、命中注入、注入/采用分开记账
+- **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
 
 `python -m pytest` → **96 项全绿**，无需安装任何依赖（真实调用走 `tools/live_smoke.py`）。
 
@@ -26,6 +27,8 @@ cd companion
 python -m pytest                      # 96 项，不联网
 python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
+python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
+python eval/run_eval.py --no-judge    # 只跑确定性槽位，不花 token
 ```
 
 `.env`（已 gitignore）：
@@ -80,5 +83,6 @@ crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new
 
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
+
 
 
