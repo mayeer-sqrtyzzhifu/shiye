@@ -78,16 +78,22 @@ python web/server.py --no-lifecycle            # 只能 Ctrl+C 结束
 python web/server.py --port 8765 --data data --open
 ```
 
-**历史对话**：`session_id` 存在 localStorage，重开页面会自动续上上次的对话；
-左侧按日期（今天 / 昨天 / 日期+周X）列出所有会话，带预览、时间、轮数，点击切换。
-「＋ 新对话」显式开一段新的。
+**历史对话按"天"组织**：一天就是一段对话，不再往下切分 session。
 
-数据来自两个接口：
+左侧每天一行（今天 / 昨天 / 日期+周X），带轮数、最后一句预览、起止时间。
+
+- 点某一天 → 只看那天的对话
+- 勾选多天 → 「查看选中」把几天的记录合并成一条时间线（按天加分隔）
+- 删除：行尾 `✕` 删当天、`删除选中` 删多天、气泡上的 `✕` 删单条
+- 只有「查看今天」时输入框可用；看历史时禁用，避免把话写进过去
 
 | 接口 | 作用 |
 |---|---|
-| `GET /api/sessions` | 按会话聚合：本地日期、时间、轮数、最后一句预览 |
-| `GET /api/history?session=…` | 该会话的消息（本地时间） |
+| `GET /api/days` | 按本地自然日聚合：轮数、条数、预览、首末时间 |
+| `GET /api/history?days=a,b` | 合并指定日期的消息（本地时间） |
+| `POST /api/delete` | `{days: [...]}` 或 `{message_ids: [...]}` |
+
+删除会登记 `deletion_target`、递增 `data_revision`、清理 FTS，删完 `verify_fts()` 仍然干净。
 
 只监听 `127.0.0.1`，不对外暴露。页面是单文件（`web/index.html`），回复走 SSE 流式；
 `/api/health` 会如实报当前是 `sqlcipher` 还是 `plaintext-dev`。
@@ -172,5 +178,6 @@ eval/run_eval.py        评估集与跑批
 - 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
 - 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
 - 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
+
 
 
