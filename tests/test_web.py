@@ -164,3 +164,18 @@ def test_ping_cancels_pending_stop(live):
     httpx.get(f"{base}/api/ping?page={page}", timeout=10)
     assert app.watchdog.pending_stop_at is None
 
+
+def test_stale_page_does_not_block_shutdown(live):
+    """崩溃/强杀的标签页会留下幽灵页面；不清掉的话"关页面即停"永久失效。"""
+    base, app = live
+    alive = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+    ghost = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+
+    # 把幽灵页面的心跳时间推到很久以前
+    app.presences._pages[ghost] = 0.0
+
+    payload = httpx.post(f"{base}/api/bye?page={alive}", timeout=10).json()
+    assert payload["pages"] == 0
+    assert payload["stop_in"] is not None
+    assert app.watchdog.pending_stop_at is not None
+

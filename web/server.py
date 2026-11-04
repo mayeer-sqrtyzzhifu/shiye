@@ -68,7 +68,7 @@ class App:
         self._server = None
         self.stop_reason: str | None = None
         self.watchdog = Watchdog(lifecycle or Lifecycle(), self._on_stop)
-        self.presences = Presences()
+        self.presences = Presences(stale_after=(lifecycle or Lifecycle()).idle_timeout)
 
         conn = self.connect()
         try:
@@ -386,5 +386,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 

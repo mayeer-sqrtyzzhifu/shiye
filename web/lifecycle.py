@@ -72,19 +72,32 @@ class Presences:
     页面离开时才是"网页关闭"。同时页面会崩溃/被强杀，所以 idle 仍然是兜底。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, stale_after: float = IDLE_TIMEOUT) -> None:
         self._lock = threading.Lock()
         self._pages: dict[str, float] = {}
+        self.stale_after = stale_after
+
+    def _prune_locked(self) -> None:
+        """清掉长时间没心跳的页面。
+
+        不做这一步，崩溃/强杀的标签页会永远留在集合里，
+        `bye` 之后 remaining 永远不为 0 —— "关页面即停"就永久失效了。
+        """
+        now = time.monotonic()
+        for pid in [p for p, seen in self._pages.items() if now - seen >= self.stale_after]:
+            self._pages.pop(pid, None)
 
     def hello(self, page_id: str | None = None) -> str:
         pid = page_id or f"p{secrets.token_hex(4)}"
         with self._lock:
+            self._prune_locked()
             self._pages[pid] = time.monotonic()
         return pid
 
     def touch(self, page_id: str | None) -> int:
         """记一次活跃；未知页面自动登记。返回当前页面数。"""
         with self._lock:
+            self._prune_locked()
             if page_id:
                 self._pages[page_id] = time.monotonic()
             return len(self._pages)
@@ -92,22 +105,29 @@ class Presences:
     def bye(self, page_id: str | None) -> int:
         """页面离开；返回剩下的页面数。"""
         with self._lock:
+            self._prune_locked()
             if page_id:
                 self._pages.pop(page_id, None)
             return len(self._pages)
 
     def count(self) -> int:
         with self._lock:
+            self._prune_locked()
             return len(self._pages)
 
-    def expired(self, idle: float) -> int:
-        """清掉长时间没心跳的页面（崩溃/强杀），返回清理数量。"""
-        now = time.monotonic()
+    def expired(self, idle: float | None = None) -> int:
+        """显式清理一遍，返回清理数量。"""
         with self._lock:
-            dead = [p for p, seen in self._pages.items() if now - seen >= idle]
-            for pid in dead:
-                self._pages.pop(pid, None)
-            return len(dead)
+            before = len(self._pages)
+            if idle is not None:
+                saved, self.stale_after = self.stale_after, idle
+                try:
+                    self._prune_locked()
+                finally:
+                    self.stale_after = saved
+            else:
+                self._prune_locked()
+            return before - len(self._pages)
 
 
 class Watchdog:
