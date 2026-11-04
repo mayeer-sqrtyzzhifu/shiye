@@ -44,32 +44,61 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _validate_key(key_hex: str) -> None:
+    if len(key_hex) != 64 or any(c not in "0123456789abcdefABCDEF" for c in key_hex):
+        raise ValueError("key_hex 必须是 64 位十六进制（32 字节）")
+
+
 def connect(path: str | Path, key_hex: str | None = None) -> sqlite3.Connection:
     """Open a connection with the project's PRAGMA baseline.
 
     WAL 允许读写并行，但同一时刻**只有一个 writer**，所以调用方仍需
     保持写事务短小并设置 busy_timeout（这里默认 5s）。
+
+    加密路径是 **fail-closed** 的：要加密但没有绑定、或密钥不对，都直接抛错。
     """
     path = Path(path)
+    row_factory = sqlite3.Row
     if key_hex:
+        _validate_key(key_hex)
         if _sqlcipher is None:
             raise RuntimeError(
                 "请求了加密库但本机没有 SQLCipher 绑定（sqlcipher3）。"
                 "拒绝静默降级为明文。"
             )
         conn = _sqlcipher.connect(str(path), isolation_level=None)
+        # sqlcipher3 的 Cursor 与 stdlib sqlite3.Row 不兼容，必须用各自的 Row
+        row_factory = getattr(_sqlcipher, "Row", sqlite3.Row)
         conn.execute(f'PRAGMA key = "x\'{key_hex}\'"')
-        # 坏密钥要到真正读页面时才报错，这里主动触发一次校验
-        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        try:
+            # 坏密钥要到真正读页面时才报错，这里主动触发一次校验
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            raise RuntimeError(
+                "无法用该密钥打开数据库：密钥错误、文件损坏，或它不是加密库。"
+            ) from exc
     else:
         conn = sqlite3.connect(str(path), isolation_level=None)
 
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = row_factory
     conn.execute("PRAGMA journal_mode = WAL").fetchone()
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
+
+
+def connect_secure(
+    path: str | Path,
+    *,
+    key_file: str | Path | None = None,
+) -> sqlite3.Connection:
+    """打开（或首次创建）加密库；密钥自动生成并用 DPAPI 保护。"""
+    from . import crypto  # 避免循环导入
+
+    key_path = Path(key_file) if key_file else Path(path).with_suffix(".key")
+    return connect(path, key_hex=crypto.load_or_create_key(key_path))
 
 
 def migrations() -> list[Path]:
@@ -87,7 +116,9 @@ def schema_version(conn: sqlite3.Connection) -> int:
         row = conn.execute(
             "SELECT value FROM schema_meta WHERE key = 'schema_version'"
         ).fetchone()
-    except sqlite3.OperationalError:  # schema_meta 还不存在
+    except Exception:  # noqa: BLE001
+        # schema_meta 还不存在；注意 sqlcipher3 抛的是自己的异常类，
+        # 不是 sqlite3.OperationalError，所以这里不能只捕 sqlite3 的异常。
         return 0
     return int(row["value"]) if row else 0
 
