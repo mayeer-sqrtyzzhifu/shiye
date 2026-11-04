@@ -11,6 +11,9 @@
 - **M3 删除链路** —— 事件簇圈定、三态（hide / blur / purge）、级联、`data_revision`
 - **Prompt 拼装** —— 稳定前缀 / per-turn 动态段分离、分段预算、`untrusted_text()` 注入防护
 - **真实 provider + 一轮对话** —— OpenAI 兼容流式、reasoning/usage 记账、端到端落库
+- **SQLCipher 加密与备份** —— DPAPI 保护密钥、口令备份、明文库迁移
+- **L4 异步抽取** —— 带证据的记忆、语汇候选、幂等任务、taboo 隔离
+- **关系语汇消费方** —— alias 归一化补漏召回、命中注入、注入/采用分开记账
 
 `python -m pytest` → **96 项全绿**，无需安装任何依赖（真实调用走 `tools/live_smoke.py`）。
 
@@ -77,4 +80,5 @@ crypto.restore_from_backup("backup/2026-11-04.db", "你的口令", "new.db", new
 
 缓存按 64 token 为块，**请求尾部约 200 token 永远不缓存**。前缀 1200 时第二次命中 88%。
 结论：稳定前缀值得单独喂，但 200 token 级别基本命中不到——省 cache 不是初版的主要收益。
+
 
