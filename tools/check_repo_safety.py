@@ -10,7 +10,7 @@
 1. **密钥样式**：``sk-`` 开头的长串、GitHub token（``ghp_``/``github_pat_``）、
    AWS key。占位符（``sk-...``、``sk-your-key-here``）允许。
 2. **敏感文件被跟踪**：``.env``、``data/``、``*.db``、``*.key``、``*.sqlite``。
-3. **绝对路径**泄漏用户名（``C:\\Users\\<name>``）。
+3. **绝对路径**泄漏用户名（Windows 盘符路径、类 Unix 的 home 目录）。
 4. **数据库/密钥文件**出现在 git 历史里（一旦进过历史，删文件也没用）。
 
 退出码 1 表示发现风险，可直接用在推送前或 CI 里。
@@ -34,10 +34,13 @@ SENSITIVE_PATH = re.compile(
     r"(^|/)(\.env$|data/|.*\.db$|.*\.db-wal$|.*\.db-shm$|.*\.key$|.*\.sqlite$|.*\.pem$)"
 )
 
-ABSOLUTE_USER_PATH = re.compile(r"[A-Za-z]:\\\\?Users\\\\?[^\\\\/\s\"']+|/home/[^/\s\"']+")
+ABSOLUTE_USER_PATH = re.compile(r"[A-Za-z]:\\\\?Users\\\\?[^\\\\/\s\"']+" + "|" + r"/home/" + r"[^/\s\"']+")
 
 # 这些是允许出现在仓库里的占位符
 PLACEHOLDERS = ("sk-...", "sk-your-key-here", "sk-xxx", "sk-REDACTED")
+
+# 检查器本身含有正则与示例文本，会自匹配 —— 显式豁免
+ALLOWLIST = {"tools/check_repo_safety.py"}
 
 
 def _run(args: list[str]) -> str:
@@ -66,6 +69,8 @@ def check_worktree() -> list[str]:
     problems: list[str] = []
     files = _run(["git", "ls-files"]).splitlines()
     for path in files:
+        if path in ALLOWLIST:
+            continue
         if SENSITIVE_PATH.search(path):
             problems.append(f"敏感文件被跟踪：{path}")
         try:
@@ -82,7 +87,10 @@ def check_history() -> list[str]:
         if path and SENSITIVE_PATH.search(path):
             problems.append(f"历史里出现过敏感文件：{path}（删文件不够，需要改写历史）")
     # 只查"新增行"，避免把已有内容重复报一遍
-    diff = _run(["git", "log", "--all", "-p", "--unified=0"])
+    diff = _run([
+        "git", "log", "--all", "-p", "--unified=0", "--", ".",
+        ":(exclude)tools/check_repo_safety.py",
+    ])
     return problems + scan_text("history", diff)
 
 
@@ -122,3 +130,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
