@@ -22,6 +22,7 @@ from typing import Callable
 
 from . import db
 from . import lexicon as lex_mod
+from . import signals as sig_mod
 from .prompt import (
     LexiconLine,
     PromptBundle,
@@ -34,6 +35,13 @@ from .recall import RecallResult, recall
 
 RECENT_LIMIT = 8
 
+# 危机语境的内置兜底资源（§5.5：必须离线可用，不能依赖网络）
+DEFAULT_CRISIS_RESOURCES = (
+    "心理援助热线 12356（全国统一，24 小时）",
+    "北京心理危机研究与干预中心 010-82951332",
+    "紧急情况请拨 120 / 110",
+)
+
 
 @dataclass(frozen=True)
 class TurnResult:
@@ -44,6 +52,7 @@ class TurnResult:
     session_id: str
     turn_index: int
     persisted: bool
+    signals: sig_mod.Signals = field(default_factory=sig_mod.Signals)
     notes: dict[str, str] = field(default_factory=dict)
 
 
@@ -127,16 +136,26 @@ def run_turn(
     taboo: tuple[str, ...] = (),
     capabilities: tuple[str, ...] = (),
     lexicon: tuple[LexiconLine, ...] = (),
-    risk: int = 0,
+    risk: int | None = None,
     crisis_resources: tuple[str, ...] = (),
     gap_hint: str | None = None,
     max_tokens: int = 800,
     on_text: Callable[[str], None] | None = None,
     persist: bool = True,
 ) -> TurnResult:
-    """Run one complete turn and (by default) persist it."""
+    """Run one complete turn and (by default) persist it.
+
+    ``risk=None`` 时由 L0 规则自己判定；显式传入则覆盖（便于测试与手工降级）。
+    """
     now = now or datetime.now(timezone.utc)
     stamp = reference_time or now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    signals = sig_mod.scan(text)
+    effective_risk = signals.risk if risk is None else risk
+    # 危机语境下必须有资源可给；调用方没提供时用内置兜底（§5.5 离线可用）
+    resources = crisis_resources
+    if effective_risk >= 2 and not resources:
+        resources = DEFAULT_CRISIS_RESOURCES
 
     profile = db.get_profile(conn)
     session = _load_session(conn, session_id)
@@ -165,8 +184,8 @@ def run_turn(
         recall=recall_lines,
         lexicon=lexicon_lines,
         session={**session, "timezone": profile.get("timezone")},
-        risk=risk,
-        crisis_resources=crisis_resources,
+        risk=effective_risk,
+        crisis_resources=resources,
         gap_hint=gap_hint,
     )
 
@@ -218,5 +237,6 @@ def run_turn(
         session_id=session_id,
         turn_index=turn_index,
         persisted=persisted,
+        signals=signals,
         notes=notes,
     )

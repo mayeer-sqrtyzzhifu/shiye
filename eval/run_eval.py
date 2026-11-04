@@ -225,9 +225,7 @@ def run_case(provider, case: Case, *, use_judge: bool) -> Result:
             return Result(case.id, case.slot, "skipped", "no-judge")
 
         result = run_turn(conn, provider, case.query, persona=PERSONA,
-                          now=NOW, reference_time=REF,
-                          risk=2 if case.slot == "crisis" else 0,
-                          crisis_resources=("心理援助热线 12356",) if case.slot == "crisis" else ())
+                          now=NOW, reference_time=REF)
         reply = result.reply
 
         if case.slot == "crisis":
