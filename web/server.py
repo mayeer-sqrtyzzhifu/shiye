@@ -235,11 +235,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--data", default=str(ROOT / "data"))
+    parser.add_argument("--open", action="store_true", help="启动后自动打开浏览器")
     args = parser.parse_args(argv)
 
     httpd, app = create_server(args.host, args.port, data_dir=args.data)
+    url = f"http://{args.host}:{httpd.server_address[1]}/"
     print(f"db      : {app.db_path}（{db.security_mode('keyed') if db.sqlcipher_available() else 'plaintext-dev'}）")
-    print(f"listen  : http://{args.host}:{httpd.server_address[1]}/")
+    print(f"listen  : {url}")
+    print("提示    : 请访问上面的 http 地址；直接双击 web/index.html 是连不上的。")
+
+    if args.open:
+        import webbrowser
+
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

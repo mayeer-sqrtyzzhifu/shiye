@@ -55,6 +55,18 @@
 </style>
 </head>
 <body>
+  .typing::after { content: "▍"; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #banner {
+    padding: 10px 20px; background: #3a1f1f; color: #ffd9d9;
+    border-bottom: 1px solid #6b2b2b; font-size: 13px; line-height: 1.7;
+  }
+  #banner code { background: #522a2a; padding: 1px 6px; border-radius: 4px; }
+  #banner a { color: #ffd9d9; }
+</style>
+</head>
+<body>
+<div id="banner" hidden></div>
 <header>
   <b>Mochi</b>
   <span>本地 · 加密存储</span>
@@ -75,6 +87,21 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const stateEl = document.getElementById("state");
 const sessionId = "web-" + Math.random().toString(36).slice(2, 10);
+
+// 用 file:// 直接打开时，fetch("/api/chat") 会变成 file:///api/chat 并失败。
+// 与其弹一个看不懂的 "Failed to fetch"，不如直接把用法写在页面上。
+const servedOverHttp = location.protocol === "http:" || location.protocol === "https:";
+if (!servedOverHttp) {
+  const banner = document.getElementById("banner");
+  banner.hidden = false;
+  banner.innerHTML =
+    "这个页面是<strong>直接打开文件</strong>的，连不到本地服务。" +
+    "请先运行 <code>python web/server.py --port 8765</code>，" +
+    "然后访问 <a href='http://127.0.0.1:8765/'>http://127.0.0.1:8765/</a>" +
+    "（同样的地址，不是双击打开的 html）。";
+  sendBtn.disabled = true;
+  input.disabled = true;
+}
 
 function addRow(role, text) {
   const row = document.createElement("div");
@@ -146,7 +173,10 @@ async function send(text) {
     }
   } catch (err) {
     bubble.classList.remove("typing");
-    bubble.textContent = "请求失败：" + err.message;
+    bubble.textContent = "请求失败：" + err.message +
+      (err instanceof TypeError
+        ? "（连不上本地服务：确认 python web/server.py 还在运行，并且页面是从 http 地址打开的）"
+        : "");
     bubble.style.color = "var(--danger)";
   } finally {
     sendBtn.disabled = false;
