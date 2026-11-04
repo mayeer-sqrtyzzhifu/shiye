@@ -32,6 +32,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
         sys.path.insert(0, _p)
 
 from companion import db, extract  # noqa: E402
+from companion.prompt import format_local_moment, local_datetime  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
 from web.lifecycle import Lifecycle, Presences, Watchdog  # noqa: E402
@@ -94,6 +95,65 @@ class App:
     def connect(self):
         return db.connect_secure(self.db_path, key_file=self.key_path)
 
+    def sessions(self, limit: int = 200) -> list[dict]:
+        """按会话聚合，供左侧日期栏使用。时间转成本地日期。"""
+        conn = self.connect()
+        try:
+            tz_name = db.get_profile(conn).get("timezone")
+            rows = conn.execute(
+                """
+                WITH last_user AS (
+                    SELECT session_id, content,
+                           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id DESC) rn
+                    FROM messages WHERE role = 'user'
+                ),
+                agg AS (
+                    SELECT session_id, count(*) AS n,
+                           min(message_time) AS first_at, max(message_time) AS last_at
+                    FROM messages GROUP BY session_id
+                )
+                SELECT agg.session_id, agg.n, agg.last_at, lu.content AS preview
+                FROM agg LEFT JOIN last_user lu
+                  ON lu.session_id = agg.session_id AND lu.rn = 1
+                ORDER BY agg.last_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        out = []
+        for row in rows:
+            local = local_datetime(row["last_at"], tz_name)
+            out.append({
+                "session_id": row["session_id"] or "legacy",
+                "day": local.strftime("%Y-%m-%d") if local else (row["last_at"] or "")[:10],
+                "time": local.strftime("%H:%M") if local else "",
+                "turns": max(1, row["n"] // 2),
+                "preview": " ".join((row["preview"] or "").split())[:48],
+            })
+        return out
+
+    def history(self, session: str, limit: int = 400) -> list[dict]:
+        if not session:
+            return []
+        conn = self.connect()
+        try:
+            tz_name = db.get_profile(conn).get("timezone")
+            rows = conn.execute(
+                "SELECT role, content, message_time FROM messages "
+                "WHERE session_id = ? ORDER BY id LIMIT ?",
+                (session, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {"role": r["role"], "text": r["content"],
+             "at": format_local_moment(r["message_time"], tz_name)}
+            for r in rows
+        ]
+
     def provider(self):
         with self._provider_lock:
             if self._provider is None:
@@ -154,6 +214,14 @@ class Handler(BaseHTTPRequestHandler):
                 "pages": self.app.presences.count(),
                 "bye_grace": self.app.watchdog.policy.bye_grace,
             })
+            return
+
+        if route == "/api/sessions":
+            self._json(self.app.sessions())
+            return
+
+        if route == "/api/history":
+            self._json(self.app.history(query.get("session", "")))
             return
 
         if route == "/api/health":
@@ -390,6 +458,8 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 

@@ -179,3 +179,50 @@ def test_stale_page_does_not_block_shutdown(live):
     assert payload["stop_in"] is not None
     assert app.watchdog.pending_stop_at is not None
 
+
+def test_sessions_are_grouped_with_preview(live):
+    """左侧日期栏的数据源：每个会话一条，带本地日期与预览。"""
+    base, app = live
+    conn = app.connect()
+    try:
+        for sid, text in (("s-b", "第二个会话"), ("s-a", "第一个会话")):
+            conn.execute(
+                "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+                "VALUES ('user', ?, '2026-11-04T12:00:00Z', '2026-11-04T12:00:00Z', ?)",
+                (text, sid),
+            )
+    finally:
+        conn.close()
+
+    items = httpx.get(base + "/api/sessions", timeout=10).json()
+    by_id = {i["session_id"]: i for i in items}
+    assert {"s-a", "s-b"} <= set(by_id)
+    assert by_id["s-b"]["preview"] == "第二个会话"
+    assert len(by_id["s-b"]["day"]) == 10          # YYYY-MM-DD
+    assert by_id["s-b"]["turns"] >= 1
+
+
+def test_history_returns_messages_in_order(live):
+    base, app = live
+    conn = app.connect()
+    try:
+        for role, text in (("user", "第一句"), ("assistant", "回应一"),
+                           ("user", "第二句"), ("assistant", "回应二")):
+            conn.execute(
+                "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+                "VALUES (?, ?, '2026-11-04T12:00:00Z', '2026-11-04T12:00:00Z', 'h1')",
+                (role, text),
+            )
+    finally:
+        conn.close()
+
+    items = httpx.get(base + "/api/history?session=h1", timeout=10).json()
+    assert [i["text"] for i in items] == ["第一句", "回应一", "第二句", "回应二"]
+    assert items[0]["role"] == "user"
+    assert items[1]["at"]                          # 转成了本地时间字符串
+
+
+def test_history_of_unknown_session_is_empty(live):
+    base, _ = live
+    assert httpx.get(base + "/api/history?session=nope", timeout=10).json() == []
+

@@ -195,6 +195,19 @@ def period_of_day(hour: int) -> str:
     return "晚上"
 
 
+def local_datetime(value: str | None, tz_name: str | None = None) -> datetime | None:
+    """ISO 字符串 → 本地时区 datetime。纯日期或非法输入返回 None。"""
+    if not value:
+        return None
+    if len(value) == 10 and value[4] == "-" and value[7] == "-":
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return _localize(moment, tz_name)
+
+
 def format_local_moment(value: str | None, tz_name: str | None = None) -> str | None:
     """把存储里的时间转成**本地可读**形式。
 
@@ -205,12 +218,8 @@ def format_local_moment(value: str | None, tz_name: str | None = None) -> str | 
         return None
     if len(value) == 10 and value[4] == "-" and value[7] == "-":
         return value  # 纯日期（event_start）不带时区，原样返回
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return value
-    local = _localize(moment, tz_name)
-    return f"{local:%Y-%m-%d %H:%M}"
+    local = local_datetime(value, tz_name)
+    return f"{local:%Y-%m-%d %H:%M}" if local else value
 
 
 _MEMORY_CUES = (
