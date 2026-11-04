@@ -39,7 +39,7 @@ BUDGET: dict[str, int] = {
     "recall": 200,
     "lexicon": 60,
     "session": 60,
-    "safety": 80,
+    "safety": 120,
     "dynamic_total": 950,
     "output": 400,
 }
@@ -274,20 +274,22 @@ def build_dynamic_block(
             sections.append(f"## 会话状态\n{body}")
 
     if risk:
-        safety = ["## 安全边界"]
-        safety.append(
+        instruction = (
             "先承接情绪，不评判、不急着给方案；不追问细节，不声称「我懂你」。"
             if risk == 1 else
-            "用户可能处于危机状态。认真对待，不轻视、不转移话题、不说教；先承接情绪，"
-            "表达你在这里。**必须在回复里写出下面至少一条求助资源（含号码）**，"
-            "可以放在最后，但不许省略——这条优先级高于「简短」。"
+            "用户可能处于危机状态。认真对待，不轻视、不转移话题、不说教，先承接情绪。"
+            "必须给出下面的求助资源（含号码），不许省略——优先级高于「简短」。"
         )
+        # 先算资源的 token，再裁提示。反过来的话，预算不够时会把热线号码裁掉，
+        # 那正好是最不能丢的东西（评估集 q05 就是这么掉下去的）。
+        resources_block = ""
         if crisis_resources:
-            safety.append("本地求助资源：")
-            safety += [f"- {untrusted_text('resource', r, limit=60)}" for r in crisis_resources]
-        block = "\n".join(safety)
-        block = _clip(block, BUDGET["safety"])
-        sections.append(block)
+            resources_block = "求助资源：\n" + "\n".join(
+                f"- {untrusted_text('resource', r, limit=60)}" for r in crisis_resources
+            )
+        reserved = estimate_tokens(resources_block)
+        head = _clip("## 安全边界\n" + instruction, max(24, BUDGET["safety"] - reserved))
+        sections.append(head + ("\n" + resources_block if resources_block else ""))
 
     if lexicon:
         lines = ["## 关系语汇（本轮命中；用法约束要遵守）"]
@@ -457,4 +459,5 @@ def render(bundle: PromptBundle) -> dict:
         "dynamic": bundle.dynamic_block,
         "recent": lines,
     }
+
 
