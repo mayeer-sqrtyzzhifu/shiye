@@ -213,6 +213,22 @@ def format_local_moment(value: str | None, tz_name: str | None = None) -> str | 
     return f"{local:%Y-%m-%d %H:%M}"
 
 
+_MEMORY_CUES = (
+    "记得", "记不记得", "还记得", "上次", "之前", "那次", "那天",
+    "说过", "提过", "忘了", "忘没忘", "我跟你说",
+)
+
+
+def needs_memory_note(user_text: str) -> bool:
+    """用户是不是在问"过去的事"。
+
+    这条提示只在**确实在问往事、却没召回**时才有用。之前它无条件常驻，
+    等于每一轮都在说"不要补充细节、不确定就说不记得"——日常闲聊被压成
+    电报体（"嗯，期中的节奏。"就是这么来的）。
+    """
+    return any(cue in (user_text or "") for cue in _MEMORY_CUES)
+
+
 def _stamp(local: datetime) -> str:
     offset = local.strftime("%z")
     pretty = f"UTC{offset[:3]}:{offset[3:]}" if offset else "本地时间"
@@ -231,6 +247,7 @@ def build_dynamic_block(
     crisis_resources: tuple[str, ...] = (),
     profile_update_note: str | None = None,
     gap_hint: str | None = None,
+    memory_note: bool = False,
 ) -> str:
     """按轮变化的一切。顺序固定，便于 diff 与缓存边界对齐。"""
     sections: list[str] = []
@@ -261,8 +278,9 @@ def build_dynamic_block(
         safety.append(
             "先承接情绪，不评判、不急着给方案；不追问细节，不声称「我懂你」。"
             if risk == 1 else
-            "用户可能处于危机状态。认真对待，不轻视、不转移话题、不说教；"
-            "表达你在这里，鼓励联系可信任的人或专业支持。"
+            "用户可能处于危机状态。认真对待，不轻视、不转移话题、不说教；先承接情绪，"
+            "表达你在这里。**必须在回复里写出下面至少一条求助资源（含号码）**，"
+            "可以放在最后，但不许省略——这条优先级高于「简短」。"
         )
         if crisis_resources:
             safety.append("本地求助资源：")
@@ -297,10 +315,12 @@ def build_dynamic_block(
             used += cost
         sections.append("\n".join(lines))
     else:
-        # 没有召回时明确说"没有"，否则模型会用"我记得……"来填补空白。
-        # 这是评估集 q02 直接暴露出来的失效：先声称记得一部分，再编细节。
-        sections.append("## 记忆状态\n本轮没有召回到相关记忆。不要声称记得具体往事，"
-                        "不要补充细节；不确定就直说不记得。")
+        # 只在"用户在问往事但没召回"时才提醒别编造；日常闲聊不压语气
+        if memory_note:
+            sections.append(
+                "## 记忆状态\n你没有这段记忆。直说不记得，不要编造细节，"
+                "也不要顺着猜；可以请对方补充。"
+            )
 
     if profile_update_note:
         # 档案变更只在会话边界进前缀；会话内走这里，不动前缀（§6.4）
@@ -374,10 +394,12 @@ def assemble(
     if len(kept_recent) < len(recent):
         notes["recent_trimmed"] = f"{len(recent)} → {len(kept_recent)}"
 
+    memory_note = (not recall) and needs_memory_note(user_message)
     dynamic = build_dynamic_block(
         now=now, session=session, recall=recall, lexicon=lexicon,
         risk=risk, crisis_resources=crisis_resources,
         profile_update_note=profile_update_note, gap_hint=gap_hint,
+        memory_note=memory_note,
     )
     dynamic_tokens = estimate_tokens(dynamic) + recent_tokens
 
@@ -402,6 +424,7 @@ def assemble(
                 now=now, session=session, recall=recall, lexicon=lexicon,
                 risk=risk, crisis_resources=crisis_resources,
                 profile_update_note=profile_update_note, gap_hint=gap_hint,
+                memory_note=memory_note,
             )
             dynamic_tokens = estimate_tokens(dynamic) + recent_tokens
 
@@ -434,3 +457,4 @@ def render(bundle: PromptBundle) -> dict:
         "dynamic": bundle.dynamic_block,
         "recent": lines,
     }
+
