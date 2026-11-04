@@ -55,10 +55,14 @@ COMPANION_MODEL=deepseek-flash
 
 | 条件 | 触发 | 默认 |
 |---|---|---|
-| **bye** | 页面 `pagehide` 时发 `sendBeacon('/api/bye')` | 延迟 3s 停（刷新会撤销） |
+| **关页面** | 最后一个页面 `pagehide` 时 `sendBeacon('/api/bye')` | 1.5s 后停（刷新会撤销） |
 | **idle** | 页面每 20s 发一次 `/api/ping`，断了 | 90s |
 | **max** | 硬上限，防锁屏没关浏览器 | 12 小时 |
 | never-opened | 启动后一直没人访问 | 120s |
+
+页面在加载时向 `/api/hello` 领一个 `page_id`，`ping` / `bye` 都带上它：
+**关掉非最后一个标签页只注销，最后一个关掉才停服务**。实测关页面后约
+2.9 秒端口停止服务（1.5s 宽限 + 关监听开销）。
 
 ```powershell
 python web/server.py --idle-timeout 300        # 想长时间挂着看日志
@@ -157,3 +161,4 @@ eval/run_eval.py        评估集与跑批
 - 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
 - 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
 - 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
+
