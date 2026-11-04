@@ -12,12 +12,27 @@ def test_default_persona_renders_required_sections():
     text = persona.get().render()
     assert "姐姐" in text
     assert "## 你的来历" in text
-    assert "## 口吻" in text
+    assert "## 开头" in text
     assert "## 不要写成什么样" in text
     assert "## 回复的形态" in text
     assert "## 量化参照" in text
     assert "不要这样说" in text
     assert "风格参考" in text
+
+
+def test_examples_do_not_all_start_with_interjection():
+    """示范本身就是模型照抄的模板：如果一半示范以语气词开头，它就会每句都这么开。"""
+    starts = ("嗯", "诶", "唔", "哎呀", "啊呀", "欸")
+    examples = persona.get().examples
+    leading = sum(1 for _, a in examples if a.startswith(starts))
+    assert leading <= len(examples) * 0.25, f"{leading}/{len(examples)} 条以语气词开头，太多了"
+    # 但至少要保留一条"只应一声"的极短形态
+    assert leading >= 1
+
+
+def test_no_odd_mandarin_interjections():
+    """「啊呀」不是中文里的说法，写进人格会被模型学走。"""
+    assert "啊呀" not in persona.get().render()
 
 
 def test_persona_forbids_the_two_beat_template():

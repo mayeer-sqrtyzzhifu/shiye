@@ -164,6 +164,7 @@ def run_turn(
     crisis_resources: tuple[str, ...] = (),
     gap_hint: str | None = None,
     max_tokens: int = 800,
+    temperature: float = 0.8,
     on_text: Callable[[str], None] | None = None,
     persist: bool = True,
 ) -> TurnResult:
@@ -228,6 +229,7 @@ def run_turn(
         messages,
         on_text=on_text,
         max_tokens=max_tokens,
+        temperature=temperature,
     )
 
     notes: dict[str, str] = dict(bundle.notes)
@@ -270,6 +272,7 @@ def run_turn(
         signals=signals,
         notes=notes,
     )
+
 
 
 
