@@ -22,6 +22,7 @@ import json
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,7 +34,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
 from companion import db, extract  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
-from web.lifecycle import Lifecycle, Watchdog  # noqa: E402
+from web.lifecycle import Lifecycle, Presences, Watchdog  # noqa: E402
 
 INDEX = Path(__file__).with_name("index.html")
 
@@ -67,6 +68,7 @@ class App:
         self._server = None
         self.stop_reason: str | None = None
         self.watchdog = Watchdog(lifecycle or Lifecycle(), self._on_stop)
+        self.presences = Presences()
 
         conn = self.connect()
         try:
@@ -122,9 +124,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 静音默认访问日志
         pass
 
+    def _split(self) -> tuple[str, dict[str, str]]:
+        parsed = urlsplit(self.path)
+        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        return parsed.path, query
+
     # ── GET
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in ("/", "/index.html"):
+        route, query = self._split()
+
+        if route in ("/", "/index.html"):
             body = INDEX.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -132,7 +141,18 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if self.path == "/api/health":
+
+        if route == "/api/hello":
+            page_id = self.app.presences.hello(query.get("page"))
+            self.app.watchdog.touch()
+            self._json({
+                "page_id": page_id,
+                "pages": self.app.presences.count(),
+                "bye_grace": self.app.watchdog.policy.bye_grace,
+            })
+            return
+
+        if route == "/api/health":
             import os
 
             self.app.watchdog.touch()
@@ -142,31 +162,46 @@ class Handler(BaseHTTPRequestHandler):
                 "schema": db.latest_version(),
                 "model": getattr(self.app._provider, "model", None)
                 or os.environ.get("COMPANION_MODEL", "deepseek-flash"),
+                "pages": self.app.presences.count(),
             }
             self._json(payload)
             return
-        if self.path == "/api/ping":
+
+        if route == "/api/ping":
             self.app.watchdog.touch()
+            pages = self.app.presences.touch(query.get("page"))
             self._json({
                 "ok": True,
+                "pages": pages,
                 "idle_timeout": self.app.watchdog.policy.idle_timeout,
             })
             return
+
         self._json({"error": "not found"}, status=404)
 
     # ── POST
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/bye":
-            # 页面关闭时用 sendBeacon 发过来；延迟几秒再停，刷新页面可以撤销
-            self.app.watchdog.schedule_stop()
-            self._json({"ok": True, "stop_in": self.app.watchdog.policy.bye_grace})
+        route, query = self._split()
+
+        if route == "/api/bye":
+            # 最后一个页面离开时才停；多标签页关掉一个不影响
+            remaining = self.app.presences.bye(query.get("page"))
+            stop_in = None
+            if remaining == 0:
+                self.app.watchdog.schedule_stop()
+                stop_in = self.app.watchdog.policy.bye_grace
+                print(f"[presence] 页面已关闭，{stop_in:.1f}s 后停止服务")
+            else:
+                print(f"[presence] 一个页面离开，还剩 {remaining} 个")
+            self._json({"ok": True, "pages": remaining, "stop_in": stop_in})
             return
 
-        if self.path != "/api/chat":
+        if route != "/api/chat":
             self._json({"error": "not found"}, status=404)
             return
 
         self.app.watchdog.touch()
+        self.app.presences.touch(query.get("page"))
 
         length = int(self.headers.get("Content-Length") or 0)
         try:
@@ -340,7 +375,7 @@ def main(argv: list[str] | None = None) -> int:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
 
     try:
-        httpd.serve_forever()
+        httpd.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         print("\n[lifecycle] 停止原因：ctrl-c")
     finally:
@@ -351,3 +386,5 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

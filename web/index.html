@@ -98,19 +98,38 @@ if (!servedOverHttp) {
   sendBtn.disabled = true;
   input.disabled = true;
 } else {
-  ping();
-  setInterval(ping, 20000);
+  hello().then(() => {
+    ping();
+    setInterval(ping, 20000);
+  });
 }
 
-// ── 生命周期：让服务知道人还在不在
-// 心跳：页面开着就每 20 秒 ping；服务端心跳断了会自动停。
-async function ping() {
-  try { await fetch("/api/ping", { cache: "no-store" }); } catch (_) { /* 服务已停就算了 */ }
+// ── 生命周期：登记本页面；关掉最后一个页面时服务端自动停
+let pageId = null;
+
+async function hello() {
+  try {
+    const res = await fetch("/api/hello", { cache: "no-store" });
+    if (res.ok) pageId = (await res.json()).page_id;
+  } catch (_) { /* 服务没起来就算了 */ }
 }
-// 关页面/刷新：告诉服务端准备停；延迟 3 秒，刷新的话下一次 ping 会撤销它。
+
+async function ping() {
+  if (!pageId) return;
+  try {
+    await fetch("/api/ping?page=" + encodeURIComponent(pageId), { cache: "no-store" });
+  } catch (_) { /* 服务已停就算了 */ }
+}
+
+// 关页面/刷新：sendBeacon 在页面卸载后仍会发出。
+// 服务端只在"最后一个页面离开"时才停，所以刷新时新页面会重新登记。
 window.addEventListener("pagehide", () => {
-  try { navigator.sendBeacon("/api/bye", ""); } catch (_) { /* 无视 */ }
+  if (!pageId) return;
+  try {
+    navigator.sendBeacon("/api/bye?page=" + encodeURIComponent(pageId), "");
+  } catch (_) { /* 无视 */ }
 });
+
 // 从后台标签切回来立刻补一次，撤销可能已挂起的停止。
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) ping();

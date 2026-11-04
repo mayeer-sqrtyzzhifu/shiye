@@ -117,3 +117,50 @@ def test_unknown_path_is_404(live):
     base, _ = live
     assert httpx.get(base + "/nope", timeout=10).status_code == 404
 
+
+def test_hello_registers_a_page(live):
+    base, app = live
+    payload = httpx.get(base + "/api/hello", timeout=10).json()
+    assert payload["page_id"]
+    assert payload["pages"] == 1
+    assert payload["bye_grace"] > 0
+    assert app.presences.count() == 1
+
+
+def test_closing_one_of_two_tabs_keeps_service(live):
+    """多开标签页时，关掉一个不该把服务带走（这是"关网页就停"最容易被做坏的地方）。"""
+    base, app = live
+    a = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+    b = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+
+    first = httpx.post(f"{base}/api/bye?page={a}", timeout=10).json()
+    assert first["pages"] == 1
+    assert first["stop_in"] is None
+    assert app.watchdog.pending_stop_at is None
+
+    last = httpx.post(f"{base}/api/bye?page={b}", timeout=10).json()
+    assert last["pages"] == 0
+    assert last["stop_in"] is not None
+    assert app.watchdog.pending_stop_at is not None
+
+
+def test_ping_keeps_page_alive(live):
+    base, app = live
+    page = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+    before = app.watchdog.last_seen
+    payload = httpx.get(f"{base}/api/ping?page={page}", timeout=10).json()
+    assert payload["ok"] is True
+    assert payload["pages"] == 1
+    assert app.watchdog.last_seen is not None
+    assert before is None or app.watchdog.last_seen >= before
+
+
+def test_ping_cancels_pending_stop(live):
+    base, app = live
+    page = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+    httpx.post(f"{base}/api/bye?page={page}", timeout=10)
+    assert app.watchdog.pending_stop_at is not None
+
+    httpx.get(f"{base}/api/ping?page={page}", timeout=10)
+    assert app.watchdog.pending_stop_at is None
+
