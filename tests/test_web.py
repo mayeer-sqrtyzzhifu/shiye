@@ -376,3 +376,30 @@ def test_delete_keeps_unrelated_memories(live):
         assert left == ["用户最近失眠。"]
     finally:
         conn.close()
+
+
+def test_history_survives_thousands_of_older_messages(live):
+    """库变大后当天历史不能消失。
+
+    旧实现是"先取最早 3000 条再按日期过滤"：一旦超过 3000 条，最近的记录
+    根本进不了候选，表现为"当天的历史是空的"。
+    """
+    base, app = live
+    conn = app.connect()
+    try:
+        conn.executemany(
+            "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+            "VALUES ('user', ?, ?, ?, 'old')",
+            [(f"旧消息 {i}", "2025-01-01T12:00:00Z", "2025-01-01T12:00:00Z")
+             for i in range(3005)],
+        )
+        conn.execute(
+            "INSERT INTO messages (role, content, message_time, created_at, session_id) "
+            "VALUES ('user','今天最新的一句','2026-11-04T12:00:00Z','2026-11-04T12:00:00Z','new')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    items = httpx.get(base + "/api/history?days=2026-11-04", timeout=20).json()
+    assert [i["text"] for i in items] == ["今天最新的一句"]

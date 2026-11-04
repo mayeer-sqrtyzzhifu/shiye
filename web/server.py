@@ -22,6 +22,7 @@ import json
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 from pathlib import Path
@@ -33,6 +34,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
         sys.path.insert(0, _p)
 
 from companion import db, extract, paths, persona  # noqa: E402
+from companion import prompt as prompt_mod  # noqa: E402
 from companion.prompt import format_local_moment, local_datetime  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
@@ -48,6 +50,25 @@ BOUNDARIES = (
     "不制造独占感，不宣称只有你懂对方",
     "不阻止对方求助",
 )
+
+
+def _utc_windows(days: set[str], tz_name: str | None) -> list[tuple[str, str]]:
+    """本地自然日 → UTC 区间。日期非法就跳过，不抛。"""
+    windows: list[tuple[str, str]] = []
+    for day in sorted(days):
+        try:
+            start_local = prompt_mod._localize(
+                datetime.strptime(day, "%Y-%m-%d"), tz_name
+            )
+        except ValueError:
+            continue
+        end_local = start_local + timedelta(days=1)
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        windows.append((
+            start_local.astimezone(timezone.utc).strftime(fmt),
+            end_local.astimezone(timezone.utc).strftime(fmt),
+        ))
+    return windows
 
 
 def _memories_referencing(conn, message_ids: set[int]) -> list[int]:
@@ -139,15 +160,32 @@ class App:
         return sorted(buckets.values(), key=lambda b: b["day"], reverse=True)[:limit]
 
     def history(self, days: list[str], limit: int = 3000) -> list[dict]:
-        """把若干天的对话合并成一条时间线。"""
+        """把若干天的对话合并成一条时间线。
+
+        注意：不能"先取最早 N 条再按日期过滤"——库一旦超过 N 条，最近的记录
+        永远进不了候选，表现为"当天历史是空的"。这里改成先算出目标日期的
+        UTC 区间，用 SQL 只捞这段时间。
+        """
         wanted = set(days)
         conn = self.connect()
         try:
             tz_name = db.get_profile(conn).get("timezone")
-            rows = conn.execute(
-                "SELECT id, role, content, message_time FROM messages ORDER BY id LIMIT ?",
-                (limit,),
-            ).fetchall()
+            windows = _utc_windows(wanted, tz_name)
+            if windows:
+                clause = " OR ".join(
+                    "(message_time >= ? AND message_time < ?)" for _ in windows
+                )
+                params = [bound for pair in windows for bound in pair]
+                rows = conn.execute(
+                    "SELECT id, role, content, message_time FROM messages "
+                    f"WHERE {clause} ORDER BY id",
+                    params,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, role, content, message_time FROM messages ORDER BY id LIMIT ?",
+                    (limit,),
+                ).fetchall()
         finally:
             conn.close()
 
@@ -552,6 +590,8 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 
 
