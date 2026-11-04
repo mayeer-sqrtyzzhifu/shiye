@@ -55,6 +55,27 @@
   header b { color: var(--text); font-weight: 600; font-size: 15px; }
   #scope { color: var(--accent); }
   #state { margin-left: auto; font-size: 12px; }
+  #btn-select {
+    padding: 4px 10px; border-radius: 8px; font: inherit; font-size: 12px;
+    border: 1px solid var(--line); background: transparent; color: #c9c9d1; cursor: pointer;
+  }
+  #btn-select:hover { border-color: var(--accent); color: var(--accent); }
+  #btn-select.on { border-color: var(--accent); color: var(--accent); }
+
+  #selbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 20px; border-top: 1px solid var(--line); background: #1b1b22;
+    font-size: 13px; color: #c9c9d1;
+  }
+  #selbar[hidden] { display: none; }
+  #selbar b { color: var(--accent); }
+  #selbar button {
+    padding: 5px 12px; border-radius: 8px; font: inherit; font-size: 12px;
+    border: 1px solid var(--line); background: transparent; color: #c9c9d1; cursor: pointer;
+  }
+  #selbar button:hover { border-color: var(--accent); color: var(--accent); }
+  #selbar button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  #selbar .spacer { flex: 1; }
 
   #stream { flex: 1; overflow-y: auto; padding: 20px 20px 8px;
     display: flex; flex-direction: column; gap: 12px; }
@@ -71,6 +92,11 @@
     line-height: 18px; text-align: center; cursor: pointer; opacity: 0; }
   .row:hover .bubble .x { opacity: 1; }
   .bubble .x:hover { background: #6b2b2b; color: #fff; }
+  .row.selectable .bubble { cursor: pointer; }
+  .row.selectable:hover .bubble { filter: brightness(1.12); }
+  .row.picked .bubble { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row.picked .bubble .x { display: none; }
+  .row.selectable .bubble .x { display: none; }
   .meta { font-size: 12px; color: var(--muted); margin-top: 5px; }
   .meta .tag { border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; margin-right: 6px; }
   .tag.warn { color: var(--danger); border-color: #6b2b2b; }
@@ -106,10 +132,19 @@
     <header>
       <b>Mochi</b>
       <span id="scope">今天</span>
+      <button id="btn-select" type="button">选择消息</button>
       <span id="state">就绪</span>
     </header>
 
     <div id="stream"></div>
+
+    <div id="selbar" hidden>
+      <span>已选 <b id="sel-count">0</b> 条</span>
+      <span class="spacer"></span>
+      <button id="btn-sel-all" type="button">全选本页</button>
+      <button id="btn-sel-del" type="button" class="danger">删除选中</button>
+      <button id="btn-sel-cancel" type="button">取消</button>
+    </div>
 
     <form id="composer">
       <textarea id="input" placeholder="说点什么…（Enter 发送，Shift+Enter 换行）" autofocus></textarea>
@@ -129,6 +164,15 @@ const daysEl = document.getElementById("days");
 const btnToday = document.getElementById("btn-today");
 const btnView = document.getElementById("btn-view");
 const btnDel = document.getElementById("btn-del");
+const btnSelect = document.getElementById("btn-select");
+const selBar = document.getElementById("selbar");
+const selCount = document.getElementById("sel-count");
+const btnSelAll = document.getElementById("btn-sel-all");
+const btnSelDel = document.getElementById("btn-sel-del");
+const btnSelCancel = document.getElementById("btn-sel-cancel");
+
+let selectMode = false;
+const picked = new Set();
 
 const DAY_NAMES = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 let pageId = null;
@@ -270,7 +314,9 @@ function addSep(text) {
 
 async function loadHistory() {
   clearStream();
+  picked.clear();
   updateScope();
+  renderSelection();
   const days = [...viewing].sort();
   if (!days.length) return;
   let items = [];
@@ -303,6 +349,7 @@ async function loadHistory() {
 function addRow(role, text, id) {
   const row = document.createElement("div");
   row.className = "row " + role;
+  if (id) row.dataset.id = String(id);
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = text;
@@ -311,13 +358,42 @@ function addRow(role, text, id) {
     x.className = "x";
     x.textContent = "✕";
     x.title = "删除这条";
-    x.addEventListener("click", () => removeMessages([id]));
+    x.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeMessages([id]);
+    });
     bubble.appendChild(x);
+
+    row.addEventListener("click", () => {
+      if (!selectMode) return;
+      const key = String(id);
+      if (picked.has(key)) picked.delete(key); else picked.add(key);
+      renderSelection();
+    });
   }
   row.appendChild(bubble);
   streamEl.appendChild(row);
   streamEl.scrollTop = streamEl.scrollHeight;
   return bubble;
+}
+
+// ── 多选删除
+function renderSelection() {
+  selBar.hidden = !selectMode;
+  btnSelect.classList.toggle("on", selectMode);
+  btnSelect.textContent = selectMode ? "退出选择" : "选择消息";
+  for (const row of streamEl.querySelectorAll(".row[data-id]")) {
+    row.classList.toggle("selectable", selectMode);
+    row.classList.toggle("picked", selectMode && picked.has(row.dataset.id));
+  }
+  selCount.textContent = String(picked.size);
+  btnSelDel.disabled = picked.size === 0;
+}
+
+function setSelectMode(on) {
+  selectMode = on;
+  if (!on) picked.clear();
+  renderSelection();
 }
 
 function addMeta(bubble, payload) {
@@ -454,6 +530,26 @@ btnView.addEventListener("click", () => {
 btnDel.addEventListener("click", () => {
   if (!selected.size) return;
   removeDays([...selected]);
+});
+
+btnSelect.addEventListener("click", () => setSelectMode(!selectMode));
+
+btnSelCancel.addEventListener("click", () => setSelectMode(false));
+
+btnSelAll.addEventListener("click", () => {
+  const rows = [...streamEl.querySelectorAll(".row[data-id]")];
+  const allPicked = rows.length > 0 && rows.every((r) => picked.has(r.dataset.id));
+  picked.clear();
+  if (!allPicked) for (const r of rows) picked.add(r.dataset.id);
+  renderSelection();
+});
+
+btnSelDel.addEventListener("click", async () => {
+  if (!picked.size) return;
+  const ids = [...picked].map(Number);
+  if (!confirm(`删除选中的 ${ids.length} 条消息？不可恢复。`)) return;
+  await postDelete({ message_ids: ids });
+  setSelectMode(false);
 });
 
 // ── 启动

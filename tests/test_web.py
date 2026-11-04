@@ -272,6 +272,22 @@ def test_delete_single_message(live):
     assert [i["text"] for i in left] == ["第二条"]
 
 
+def test_delete_multiple_selected_messages(live):
+    """同一界面里勾选多条再一起删。"""
+    base, app = live
+    for i, text in enumerate(["一", "二", "三", "四"]):
+        _insert(app, "user", text, f"2026-11-04T12:0{i}:00Z")
+
+    items = httpx.get(base + "/api/history?days=2026-11-04", timeout=10).json()
+    ids = [i["id"] for i in items]
+    out = httpx.post(base + "/api/delete",
+                     json={"message_ids": [ids[0], ids[2]]}, timeout=10).json()
+    assert out["deleted"] == 2
+    assert out["fts_ok"] is True
+
+    left = httpx.get(base + "/api/history?days=2026-11-04", timeout=10).json()
+    assert [i["text"] for i in left] == ["二", "四"]
+
 def test_delete_keeps_index_clean(live):
     base, app = live
     _insert(app, "user", "会被删掉的敏感内容", "2026-11-04T12:00:00Z")
@@ -288,3 +304,4 @@ def test_delete_keeps_index_clean(live):
 def test_delete_requires_a_target(live):
     base, _ = live
     assert httpx.post(base + "/api/delete", json={}, timeout=10).status_code == 400
+
