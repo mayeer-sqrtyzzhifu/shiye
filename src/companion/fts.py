@@ -56,7 +56,13 @@ def tokenized_text(text: str | None) -> str:
 
 
 def match_expr(query: str | None) -> str | None:
-    """Build an FTS5 MATCH expression (OR of quoted tokens), or None if empty."""
+    """Build an FTS5 MATCH expression (OR of quoted tokens), or None if empty.
+
+    只用 bigram：索引侧虽然有 unigram，但查询侧放开单字 OR 会把「一」「叫」
+    这类高频字全算命中，实测 relevance 掉到 1e-6 量级，无法用分数区分真假。
+    非连续词素（「搬家」对「搬了一次家」）交给 §1.2 的 alias 归一化解决，
+    不在检索层硬凑。
+    """
     tokens = list(dict.fromkeys(tokenize(query, for_query=True)))
     if not tokens:
         return None

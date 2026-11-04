@@ -301,12 +301,9 @@ def search_memories(
     """Memory text path. Returns [(id, relevance)] with relevance = -bm25 (higher is better).
 
     ``min_relevance`` is the τ of §3.5, applied to the text path only.
+    主路径是 bigram；一轮零命中时退到单字 OR 兜底（见 ``fts.match_expr_unigrams``）。
     """
-    expr = fts.match_expr(query)
-    if expr is None:
-        return []
-    rows = conn.execute(
-        """
+    sql = """
         SELECT memories_fts.rowid AS id, -bm25(memories_fts) AS relevance
         FROM memories_fts
         JOIN memory_items m ON m.id = memories_fts.rowid
@@ -316,9 +313,11 @@ def search_memories(
           AND m.superseded_by IS NULL
         ORDER BY relevance DESC
         LIMIT ?
-        """,
-        (expr, user_id, limit),
-    ).fetchall()
+    """
+    expr = fts.match_expr(query)
+    if expr is None:
+        return []
+    rows = conn.execute(sql, (expr, user_id, limit)).fetchall()
     return [(r["id"], r["relevance"]) for r in rows if r["relevance"] >= min_relevance]
 
 
@@ -331,11 +330,7 @@ def search_messages(
     limit: int = 20,
 ) -> list[tuple[int, float]]:
     """Conversation-text path. ``no_send`` rows are returned but must not be sent out."""
-    expr = fts.match_expr(query)
-    if expr is None:
-        return []
-    rows = conn.execute(
-        """
+    sql = """
         SELECT messages_fts.rowid AS id, -bm25(messages_fts) AS relevance
         FROM messages_fts
         JOIN messages msg ON msg.id = messages_fts.rowid
@@ -343,9 +338,11 @@ def search_messages(
           AND msg.user_id = ?
         ORDER BY relevance DESC
         LIMIT ?
-        """,
-        (expr, user_id, limit),
-    ).fetchall()
+    """
+    expr = fts.match_expr(query)
+    if expr is None:
+        return []
+    rows = conn.execute(sql, (expr, user_id, limit)).fetchall()
     return [(r["id"], r["relevance"]) for r in rows if r["relevance"] >= min_relevance]
 
 
