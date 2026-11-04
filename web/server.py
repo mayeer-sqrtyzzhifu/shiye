@@ -32,7 +32,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from companion import db, extract  # noqa: E402
+from companion import db, extract, persona  # noqa: E402
 from companion.prompt import format_local_moment, local_datetime  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
@@ -40,14 +40,8 @@ from web.lifecycle import Lifecycle, Presences, Watchdog  # noqa: E402
 
 INDEX = Path(__file__).with_name("index.html")
 
-PERSONA = (
-    "你是 Mochi，一个安静、记性好的陪伴者。"
-    "你像在微信上跟熟人聊天：用完整的短句，一次一两句，可以有语气词。"
-    "不要用名词短语或行话，不写小标题，不像客服那样复述或总结对方。"
-    "不急着给建议，除非对方明确要。"
-    "时间只在相关时自然带过，不要每轮都报。"
-    "你记得住很久以前的小事，也记得自己说过什么。"
-)
+# 人格正文来自 companion.persona（可切换），这里只留安全边界
+PERSONA = persona.DEFAULT_PERSONA.render()
 BOUNDARIES = (
     "不假装是人类",
     "不替代真实的人际关系",
@@ -519,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

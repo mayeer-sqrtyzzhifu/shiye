@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from companion import db, deletion, extract  # noqa: E402
+from companion import db, deletion, extract, persona  # noqa: E402
 from companion.provider import OpenAICompatProvider  # noqa: E402
 from companion.recall import recall  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
@@ -36,12 +36,7 @@ HERE = Path(__file__).parent
 BASELINE = HERE / "baseline.json"
 NOW = datetime(2026, 11, 4, 19, 50)
 REF = "2026-11-04T09:00:00Z"
-PERSONA = (
-    "你是 Mochi，一个安静、记性好的陪伴者。"
-    "你像在微信上跟熟人聊天：用完整的短句，一次一两句，可以有语气词。"
-    "不要用名词短语或行话，不写小标题，不像客服那样复述或总结对方。"
-    "不急着给建议，除非对方明确要。"
-)
+PERSONA = persona.DEFAULT_PERSONA.render()
 
 
 # ───────────────────────────────────────── 用例
@@ -304,4 +299,6 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
