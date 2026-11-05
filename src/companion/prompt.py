@@ -78,14 +78,19 @@ def untrusted_text(label: str, text: str | None, *, limit: int = 200) -> str:
 
 
 def _clip(text: str, budget: int) -> str:
-    """按估算 token 截断到预算内。"""
+    """按估算 token 截断到预算内（**含**结尾省略号）。
+
+    省略号本身也占 1 个 token，所以正文只放到 budget - 1；
+    否则每次都超一个，多个段叠加起来就会悄悄突破总预算。
+    """
     if estimate_tokens(text) <= budget:
         return text
+    room = max(1, budget - 1)
     out: list[str] = []
     used = 0
     for ch in text:
         cost = 1 if _CJK_RE.match(ch) else 0.25
-        if used + cost > budget:
+        if used + cost > room:
             break
         out.append(ch)
         used += cost
@@ -339,12 +344,17 @@ def build_dynamic_block(
         used = estimate_tokens(lines[0])
         for item in recall:
             when = f"（{item.when}）" if item.when else ""
-            line = f"- {untrusted_text(item.source, item.text)}{when}"
-            cost = estimate_tokens(line)
-            if used + cost > BUDGET["recall"]:
+            room = BUDGET["recall"] - used - estimate_tokens(when) - 4
+            if room < 12:
                 break
+            body = untrusted_text(item.source, item.text)
+            if estimate_tokens(body) > room:
+                # 一条很长的记忆以前会直接 break，把整段召回清零；
+                # 现在按剩余预算截断它，后面较短的条目还有机会进来
+                body = _clip(body, room) + "…"
+            line = f"- {body}{when}"
             lines.append(line)
-            used += cost
+            used += estimate_tokens(line)
         sections.append("\n".join(lines))
     else:
         # 只在"用户在问往事但没召回"时才提醒别编造；日常闲聊不压语气
@@ -385,10 +395,16 @@ def _render_recent(turns: tuple[Turn, ...], budget: int) -> tuple[tuple[Turn, ..
     used = 0
     for turn in reversed(turns):
         cost = estimate_tokens(turn.content) + estimate_tokens(turn.role) + 4
-        if kept and used + cost > budget:
-            break
-        kept.append(turn)
-        used += cost
+        if used + cost <= budget:
+            kept.append(turn)
+            used += cost
+            continue
+        if not kept:
+            # 最新一条本身就超预算：截断它，而不是原样塞进去把预算撑爆
+            room = max(16, budget - 8)
+            kept.append(Turn(turn.role, _clip(turn.content, room) + "…"))
+            used = budget
+        break
     kept.reverse()
     return tuple(kept), used
 
@@ -459,6 +475,16 @@ def assemble(
                 memory_note=memory_note,
             )
             dynamic_tokens = estimate_tokens(dynamic) + recent_tokens
+
+    # 最后一道硬闸：砍完段落仍然超，就直接截断动态段本身。
+    # 再往下只能靠"软约束"，而软约束在真实对话里一定会被突破。
+    if dynamic_tokens > BUDGET["dynamic_total"]:
+        room = max(40, BUDGET["dynamic_total"] - recent_tokens)
+        clipped = _clip(dynamic, room)
+        if clipped != dynamic:
+            dynamic = clipped + "\n…（内容过长已截断）"
+            dynamic_tokens = estimate_tokens(dynamic) + recent_tokens
+            notes["dynamic_clipped"] = f"{room}"
 
     user_tokens = estimate_tokens(user_message)
     if user_tokens > BUDGET["user_message"]:

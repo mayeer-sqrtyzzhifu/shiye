@@ -278,3 +278,52 @@ def test_section_order_is_stable():
 
 
 
+
+
+def test_single_huge_message_cannot_blow_the_budget():
+    """一条超长消息不能突破动态预算。
+
+    旧逻辑是 `if kept and used + cost > budget: break` —— 最新一条永远保留，
+    于是一条 5000 字的消息直接把预算撑爆。
+    """
+    from companion.prompt import BUDGET
+
+
+    huge = "很长的内容" * 2000          # 一万字级别
+    bundle = assemble(**BASE, now=NOW, user_message="嗯", recent=(
+        Turn("user", huge),
+        Turn("assistant", "嗯。"),
+    ))
+    assert bundle.budget_used["recent"] <= BUDGET["recent"]
+    assert bundle.budget_used["dynamic"] <= BUDGET["dynamic_total"]
+    # 截断后仍要保留可读的开头
+    assert bundle.recent[-1].content.endswith("…") or bundle.recent[-1].content
+
+
+def test_long_memories_cannot_empty_the_recall_section():
+    """一条超长记忆以前会直接 break，把整段召回清零。
+
+    现在按剩余预算截断它，后面较短的条目仍有机会进来，
+    且总预算不超。
+    """
+    from companion.prompt import BUDGET, RecallLine
+
+    recall_lines = tuple(
+        RecallLine("这是一条很长的记忆内容" * 20, "2026-11-01 10:00", "memory")
+        for _ in range(20)
+    )
+    bundle = assemble(**BASE, now=NOW, user_message="嗯", recall=recall_lines)
+    assert bundle.budget_used["dynamic"] <= BUDGET["dynamic_total"]
+    assert "## 相关记忆" in bundle.dynamic_block
+    assert bundle.dynamic_block.count("- [memory]") >= 1, "至少要有条真内容，不能只剩标题"
+
+
+def test_dynamic_hard_clip_is_a_last_resort():
+    """硬截断是兜底：真的超出时，动态段本身要被切，而不是只留个 note。"""
+    from companion.prompt import _clip, estimate_tokens
+
+    text = "很长" * 5000
+    clipped = _clip(text, 100)
+    assert estimate_tokens(clipped) <= 100
+    assert len(clipped) < len(text)
+
