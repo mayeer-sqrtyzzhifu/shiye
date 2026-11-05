@@ -88,6 +88,34 @@ def _memories_referencing(conn, message_ids: set[int]) -> list[int]:
     return found
 
 
+class ExtractWorker(threading.Thread):
+    """单 worker 轮询抽取队列。
+
+    以前是每轮对话起一个 daemon 线程：进程一退任务就没了，异常被 pass 吞掉，
+    也看不到失败。现在任务落库，worker 只负责跑，失败会记录并有限重试。
+    """
+
+    def __init__(self, app, interval: float = 2.0) -> None:
+        super().__init__(daemon=True, name="extract-worker")
+        self.app = app
+        self.interval = interval
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                conn = self.app.connect()
+                try:
+                    extract.run_queue(conn, self.app.provider(), limit=5)
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001 - worker 不能因一次失败退出
+                print(f"[extract] worker: {type(exc).__name__}: {exc}")
+
+
 class App:
     def __init__(
         self,
@@ -107,6 +135,7 @@ class App:
         self.stop_reason: str | None = None
         self.watchdog = Watchdog(lifecycle or Lifecycle(), self._on_stop)
         self.presences = Presences(stale_after=(lifecycle or Lifecycle()).idle_timeout)
+        self.extract_worker = ExtractWorker(self)
 
         conn = self.connect()
         try:
@@ -267,31 +296,25 @@ class App:
         finally:
             conn.close()
 
+    def start_extract_worker(self) -> None:
+        """恢复上次残留的 running 任务，并启动单 worker。"""
+        conn = self.connect()
+        try:
+            recovered = extract.recover_stuck(conn)
+        finally:
+            conn.close()
+        if recovered:
+            print(f"[extract] 恢复 {recovered} 个中断的任务")
+        self.extract_worker.start()
+
+    def stop_extract_worker(self) -> None:
+        self.extract_worker.stop()
+
     def provider(self):
         with self._provider_lock:
             if self._provider is None:
                 self._provider = self.provider_factory()
             return self._provider
-
-    def extract_async(self, conn_factory, payload: dict) -> None:
-        def run() -> None:
-            try:
-                conn = conn_factory()
-                try:
-                    extract.extract_turn(
-                        conn, self.provider(),
-                        user_text=payload["user_text"],
-                        assistant_text=payload["assistant_text"],
-                        evidence_ids=payload["evidence_ids"],
-                        turn_id=payload["turn_id"],
-                    )
-                finally:
-                    conn.close()
-            except Exception:  # noqa: BLE001 - 抽取失败绝不影响这一轮
-                pass
-
-        threading.Thread(target=run, daemon=True).start()
-
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
@@ -441,11 +464,20 @@ class Handler(BaseHTTPRequestHandler):
 
             with self.app.write_lock:
                 # 会话单位是"天"：不传 session_id，由 run_turn 按本地日期决定
+                def on_persist(conn, turn_id, user_id, assistant_id, user_text, assistant_text):
+                    # 与消息落库同事务：崩在中间也不会出现"消息在、任务丢"
+                    extract.enqueue_extract(conn, turn_id, {
+                        "user_text": user_text,
+                        "assistant_text": assistant_text,
+                        "evidence_ids": [user_id],
+                    })
+
                 result = run_turn(
                     conn, self.app.provider(), text,
                     persona=PERSONA,
                     boundaries=BOUNDARIES,
                     on_text=on_text,
+                    on_persist=on_persist,
                 )
 
             usage = result.completion.usage
@@ -460,17 +492,6 @@ class Handler(BaseHTTPRequestHandler):
                 "notes": result.notes,
             })
 
-            if result.persisted:
-                rows = conn.execute(
-                    "SELECT id FROM messages ORDER BY id DESC LIMIT 2"
-                ).fetchall()
-                ids = [r["id"] for r in reversed(rows)][:1]
-                self.app.extract_async(self.app.connect, {
-                    "user_text": text,
-                    "assistant_text": result.reply,
-                    "evidence_ids": ids,
-                    "turn_id": f"{session_id}:{result.turn_index}",
-                })
         except (BrokenPipeError, ConnectionResetError):
             pass
         except Exception as exc:  # noqa: BLE001
@@ -507,6 +528,7 @@ def create_server(
     handler = type("BoundHandler", (Handler,), {"app": app})
     httpd = ThreadingHTTPServer((host, port), handler)
     app.attach_server(httpd)
+    app.start_extract_worker()
     return httpd, app
 
 

@@ -55,6 +55,8 @@ class TurnResult:
     session_id: str
     turn_index: int
     persisted: bool
+    user_message_id: int | None = None
+    assistant_message_id: int | None = None
     signals: sig_mod.Signals = field(default_factory=sig_mod.Signals)
     notes: dict[str, str] = field(default_factory=dict)
 
@@ -168,6 +170,7 @@ def run_turn(
     keep_ratio_memory: float | None = None,
     keep_ratio_message: float | None = None,
     on_text: Callable[[str], None] | None = None,
+    on_persist: Callable[[sqlite3.Connection, str, int, int, str, str], None] | None = None,
     persist: bool = True,
 ) -> TurnResult:
     """Run one complete turn and (by default) persist it.
@@ -249,8 +252,10 @@ def run_turn(
         notes["empty_reply"] = "模型只产出 reasoning，正文为空"
 
     persisted = False
+    user_message_id = assistant_message_id = None
     turn_index = session.get("turn_index", 0)
     if persist and completion.text.strip():
+        user_message_id = assistant_message_id = None
         with db.tx(conn):
             for role, content in (("user", text), ("assistant", completion.text)):
                 cur = conn.execute(
@@ -259,7 +264,18 @@ def run_turn(
                     (role, content, stamp, db.utc_now(), session_id),
                 )
                 db.upsert_message_fts(conn, cur.lastrowid, content)
+                if role == "user":
+                    user_message_id = cur.lastrowid
+                else:
+                    assistant_message_id = cur.lastrowid
             turn_index += 1
+            # 入队必须和消息落库在同一个事务里：否则崩在两者之间，
+            # 消息写进去了但抽取任务丢了，而且没人会发现。
+            if on_persist and user_message_id and assistant_message_id:
+                on_persist(
+                    conn, f"{session_id}:{turn_index}",
+                    user_message_id, assistant_message_id, text, completion.text,
+                )
             _save_session(
                 conn,
                 session_id,
@@ -279,9 +295,13 @@ def run_turn(
         session_id=session_id,
         turn_index=turn_index,
         persisted=persisted,
+        user_message_id=user_message_id,
+        assistant_message_id=assistant_message_id,
         signals=signals,
         notes=notes,
     )
+
+
 
 
 

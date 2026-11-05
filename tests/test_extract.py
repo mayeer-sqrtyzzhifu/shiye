@@ -242,15 +242,47 @@ def test_run_pending_marks_task_done(conn):
     assert row["status"] == "done"
 
 
-def test_run_pending_keeps_failure_for_retry(conn):
+def test_failed_job_retries_then_gives_up(conn):
+    """解析失败要重试，但不能无限重试 —— 到上限就停在 failed，失败可见。"""
     mid = add_message(conn, "在吗")
     extract.enqueue_extract(conn, "t21", {
         "user_text": "在吗", "assistant_text": "在", "evidence_ids": [mid], "turn_id": "t21",
     })
-    extract.run_pending(conn, provider_replying("坏掉的输出"))
+
+    extract.run_queue(conn, provider_replying("坏掉的输出"))
     row = conn.execute("SELECT status, retry_count FROM async_task WHERE turn_id='t21'").fetchone()
-    assert row["status"] == "failed"
+    assert row["status"] == "pending"      # 还能再试
     assert row["retry_count"] == 1
+
+    for _ in range(extract.MAX_ATTEMPTS):
+        extract.run_queue(conn, provider_replying("坏掉的输出"))
+    row = conn.execute("SELECT status, retry_count, last_error FROM async_task WHERE turn_id='t21'").fetchone()
+    assert row["status"] == "failed"
+    assert row["retry_count"] >= extract.MAX_ATTEMPTS
+    assert row["last_error"]
+
+
+def test_enqueue_is_idempotent(conn):
+    mid = add_message(conn, "在吗")
+    payload = {"user_text": "在吗", "assistant_text": "在", "evidence_ids": [mid]}
+    extract.enqueue_extract(conn, "t22", payload)
+    extract.enqueue_extract(conn, "t22", payload)
+    assert conn.execute(
+        "SELECT count(*) c FROM async_task WHERE turn_id='t22'"
+    ).fetchone()["c"] == 1
+
+
+def test_recover_stuck_resets_running(conn):
+    """进程被杀时 running 的任务必须回到 pending，否则永远没人捡。"""
+    mid = add_message(conn, "在吗")
+    extract.enqueue_extract(conn, "t23", {
+        "user_text": "在吗", "assistant_text": "在", "evidence_ids": [mid],
+    })
+    conn.execute("UPDATE async_task SET status='running' WHERE turn_id='t23'")
+    assert extract.recover_stuck(conn) == 1
+    assert conn.execute(
+        "SELECT status FROM async_task WHERE turn_id='t23'"
+    ).fetchone()["status"] == "pending"
 
 
 
@@ -270,3 +302,51 @@ def test_extraction_skips_when_evidence_deleted(conn):
     assert outcome.notes.get("skipped") == "evidence deleted"
     assert provider.calls == []          # 连模型调用都省了
     assert conn.execute("SELECT count(*) c FROM memory_items").fetchone()["c"] == 0
+
+
+def test_same_slot_twice_supersedes_instead_of_crashing(conn):
+    """同一槽位写第二次不能撞唯一索引，而是把旧值置为 superseded。"""
+    mid = add_message(conn, "我换工作了，现在在 B 公司")
+    payload = {
+        "memories": [
+            {"content": "用户在 A 公司上班。", "epistemic_status": "explicit",
+             "source_message_ids": [mid], "slot_key": "employer"},
+            {"content": "用户在 B 公司上班。", "epistemic_status": "explicit",
+             "source_message_ids": [mid], "slot_key": "employer"},
+        ]
+    }
+    import json as _json
+    from companion.provider import FakeProvider
+
+    provider = FakeProvider([_json.dumps(payload, ensure_ascii=False)])
+    outcome = extract.extract_turn(
+        conn, provider, user_text="我换工作了", assistant_text="嗯",
+        evidence_ids=[mid], turn_id="t-slot",
+    )
+    assert outcome.ok
+    rows = conn.execute(
+        "SELECT id, content, status, valid_to, superseded_by FROM memory_items ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["status"] == "superseded"
+    assert rows[0]["valid_to"] is not None
+    assert rows[0]["superseded_by"] == rows[1]["id"]
+    assert rows[1]["status"] == "active"
+    # 只有新值在召回范围内
+    hits = db.search_memories(conn, "公司")
+    assert [h[0] for h in hits] == [rows[1]["id"]]
+
+
+def test_slot_supersede_keeps_fts_clean(conn):
+    mid = add_message(conn, "我换工作了")
+    import json as _json
+    from companion.provider import FakeProvider
+
+    for company in ("A 公司", "B 公司"):
+        provider = FakeProvider([_json.dumps(
+            {"memories": [{"content": f"用户在 {company} 上班。", "source_message_ids": [mid],
+                           "slot_key": "employer"}]}, ensure_ascii=False)])
+        extract.extract_turn(conn, provider, user_text="我换工作了", assistant_text="嗯",
+                             evidence_ids=[mid], turn_id=f"t-{company}")
+    assert db.verify_fts(conn).ok
+

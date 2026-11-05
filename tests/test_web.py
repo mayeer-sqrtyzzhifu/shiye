@@ -403,3 +403,48 @@ def test_history_survives_thousands_of_older_messages(live):
 
     items = httpx.get(base + "/api/history?days=2026-11-04", timeout=20).json()
     assert [i["text"] for i in items] == ["今天最新的一句"]
+
+
+def test_chat_enqueues_extraction_atomically(live):
+    """对话落库时必须在同一事务里入队，不能事后补。"""
+    base, app = live
+    with httpx.stream("POST", base + "/api/chat", timeout=30,
+                      json={"text": "我养了只猫叫团子"}) as response:
+        list(response.iter_lines())
+
+    conn = app.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, payload_ref FROM async_task WHERE kind='extract' ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "对话后应产生抽取任务"
+    payload = json.loads(row["payload_ref"])
+    assert payload["evidence_ids"], "任务里必须带证据消息 id"
+
+
+def test_extract_worker_processes_jobs(live):
+    """worker 会自动把任务跑完，不需要手动触发。"""
+    import time
+
+    base, app = live
+    with httpx.stream("POST", base + "/api/chat", timeout=30,
+                      json={"text": "我养了只猫叫团子"}) as response:
+        list(response.iter_lines())
+
+    deadline = time.time() + 15
+    status = None
+    while time.time() < deadline:
+        conn = app.connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM async_task WHERE kind='extract' ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        status = row["status"] if row else None
+        if status in ("done", "failed"):
+            break
+        time.sleep(0.3)
+    assert status == "done", f"worker 没跑完任务，最终状态 {status}"
