@@ -27,6 +27,9 @@ from .timequery import CONF_MID, TimeQuery, resolve
 
 TIER0_LIMIT = 2
 
+# 取候选时多捞几条，给 no_send 过滤留出余量
+MESSAGE_PROBE = 5
+
 # 相关性下限。**用相对比例，不用绝对分。**
 #
 # 最初标定的是绝对阈值（τ=2.5），在 34 篇语料上精度 0.88 / 召回 1.00。
@@ -208,24 +211,33 @@ def recall(
         for i, s in _keep_strong(memory_raw, keep_ratio_memory)
     ][:TEXT_LIMIT_MEMORY]
 
+    # 多取几条再筛：如果只取 1 条，而它恰好是 no_send，这个位置就白占了
+    # （§9.2 的原文名额只有一个，被挡住就等于整轮没有原文召回）
     message_raw = [
         (i, s)
         for i, s in db.search_messages(
             conn, query_text, min_relevance=0.0,
-            limit=TEXT_LIMIT_MESSAGE + len(taken_message),
+            limit=TEXT_LIMIT_MESSAGE + len(taken_message) + MESSAGE_PROBE,
         )
         if i not in taken_message
     ]
-    message_scored = _keep_strong(message_raw, keep_ratio_message)[:TEXT_LIMIT_MESSAGE]
-    flags = _no_send_map(conn, [i for i, _ in message_scored])
+    candidates = _keep_strong(message_raw, keep_ratio_message)
+    flags = _no_send_map(conn, [i for i, _ in candidates])
+    sendable = [(i, s) for i, s in candidates if not flags.get(i, False)]
+    blocked = [(i, s) for i, s in candidates if flags.get(i, False)]
+
+    # 先按 no_send 分流，再按名额截断 —— 顺序反了就会用不可发送的内容占位
+    message_scored = sendable[:TEXT_LIMIT_MESSAGE]
     message_text = [
-        Hit("message", i, 1, s, "fts_message", flags.get(i, False))
-        for i, s in message_scored
+        Hit("message", i, 1, s, "fts_message", False) for i, s in message_scored
     ]
 
     # 原文的 1 个位置先预留，避免被 tier0 与记忆文本挤掉
-    injectable_message = [h for h in message_text if not h.no_send]
-    local_only = tuple(tier0_local + [h for h in message_text if h.no_send])
+    injectable_message = list(message_text)
+    local_only = tuple(
+        tier0_local
+        + [Hit("message", i, 1, s, "fts_message", True) for i, s in blocked]
+    )
 
     message_slots = min(TEXT_LIMIT_MESSAGE, len(injectable_message))
     memory_slots = min(TEXT_LIMIT_MEMORY, TOTAL_LIMIT - len(tier0) - message_slots)

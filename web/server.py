@@ -390,8 +390,41 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, status=404)
 
     # ── POST
+    def _guard_post(self, route: str) -> bool:
+        """挡掉跨站请求和"简单请求"式的 CSRF。
+
+        监听 127.0.0.1 只能防止外部直连，挡不住用户浏览器里别的页面
+        向 localhost 发请求（text/plain 的跨站 POST 不会触发预检）。
+        所以要求 JSON，并校验 Origin。
+
+        例外：``/api/bye`` 由 sendBeacon 发出，浏览器固定用 text/plain，
+        前端无法改成 JSON —— 这条只靠 Origin 把关。
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        allowed_types = {"application/json"}
+        if route == "/api/bye":
+            allowed_types.add("text/plain")
+        if ctype not in allowed_types:
+            self._json({"error": "unsupported content-type"}, status=415)
+            return False
+
+        origin = self.headers.get("Origin")
+        if origin:
+            host = self.headers.get("Host") or ""
+            allowed = {
+                f"http://{host}", f"https://{host}",
+                f"http://127.0.0.1:{self.server.server_address[1]}",
+                f"http://localhost:{self.server.server_address[1]}",
+            }
+            if origin not in allowed:
+                self._json({"error": "cross-origin request rejected"}, status=403)
+                return False
+        return True
+
     def do_POST(self) -> None:  # noqa: N802
         route, query = self._split()
+        if not self._guard_post(route):
+            return
 
         if route == "/api/bye":
             # 最后一个页面离开时才停；多标签页关掉一个不影响

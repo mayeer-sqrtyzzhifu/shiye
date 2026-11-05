@@ -197,3 +197,29 @@ def test_keep_ratio_is_sane():
     for ratio in (recall.KEEP_RATIO_MEMORY, recall.KEEP_RATIO_MESSAGE):
         assert 0 < ratio < 1
 
+
+
+def test_no_send_does_not_consume_the_message_slot(conn):
+    """no_send 的原文不能占掉唯一的原文名额。
+
+    旧实现先截到 1 条再筛 no_send：如果截到的那条正好是 no_send，
+    这一轮就完全没有原文召回，而候选池里本来有可发送的。
+    """
+    conn.execute(
+        "INSERT INTO messages (role, content, message_time, created_at, session_id, no_send) "
+        "VALUES ('user','搬家的事不想被提起','2026-11-04T10:00:00Z','2026-11-04T10:00:00Z','s',1)"
+    )
+    conn.execute(
+        "INSERT INTO messages (role, content, message_time, created_at, session_id, no_send) "
+        "VALUES ('user','搬家那天下了很大的雨','2026-11-04T09:00:00Z','2026-11-04T09:00:00Z','s',0)"
+    )
+    conn.commit()
+    for row in conn.execute("SELECT id, content FROM messages"):
+        db.upsert_message_fts(conn, row["id"], row["content"])
+
+    result = recall(conn, "搬家", reference_time=REF)
+    injected = [h for h in result.hits if h.source == "fts_message"]
+    assert injected, "可发送的原文应该拿到名额"
+    assert all(not h.no_send for h in injected)
+    assert any(h.no_send for h in result.local_only), "被挡的仍要能在 local_only 里看到"
+

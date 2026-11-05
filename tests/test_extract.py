@@ -350,3 +350,83 @@ def test_slot_supersede_keeps_fts_clean(conn):
                              evidence_ids=[mid], turn_id=f"t-{company}")
     assert db.verify_fts(conn).ok
 
+
+
+def test_extraction_persists_event_dates(conn):
+    """带时间的事实要写 event_start/end，否则"去年年底"这类查询永远查不到。"""
+    import json as _json
+
+    from companion.provider import FakeProvider
+
+    mid = add_message(conn, "去年年底搬的家，搬完一个月才缓过来")
+    payload = {"memories": [{
+        "content": "用户去年年底搬过一次家。",
+        "source_message_ids": [mid],
+        "epistemic_status": "explicit",
+        "event_start": "2025-12-01",
+        "event_end": "2025-12-31",
+    }]}
+    provider = FakeProvider([_json.dumps(payload, ensure_ascii=False)])
+    outcome = extract.extract_turn(
+        conn, provider, user_text="去年年底搬的家", assistant_text="嗯",
+        evidence_ids=[mid], turn_id="t-date",
+    )
+    assert outcome.ok
+    row = conn.execute(
+        "SELECT event_start, event_end FROM memory_items WHERE id=?", (outcome.memory_ids[0],)
+    ).fetchone()
+    assert row["event_start"] == "2025-12-01"
+    assert row["event_end"] == "2025-12-31"
+
+
+def test_event_dates_are_validated(conn):
+    """模型给的日期必须校验：不存在的日期丢掉，end 早于 start 时纠正。"""
+    import json as _json
+
+    from companion.provider import FakeProvider
+
+    mid = add_message(conn, "聊了点事")
+    payload = {"memories": [
+        {"content": "不存在的日期", "source_message_ids": [mid], "event_start": "2026-02-30"},
+        {"content": "顺序颠倒", "source_message_ids": [mid],
+         "event_start": "2026-05-10", "event_end": "2026-05-01"},
+        {"content": "只有起点", "source_message_ids": [mid], "event_start": "2026-03-02"},
+        {"content": "只有终点", "source_message_ids": [mid], "event_end": "2026-03-03"},
+    ]}
+    provider = FakeProvider([_json.dumps(payload, ensure_ascii=False)])
+    outcome = extract.extract_turn(
+        conn, provider, user_text="聊了点事", assistant_text="嗯",
+        evidence_ids=[mid], turn_id="t-date2",
+    )
+    rows = conn.execute(
+        "SELECT content, event_start, event_end FROM memory_items ORDER BY id"
+    ).fetchall()
+    by_content = {r["content"]: r for r in rows}
+    assert by_content["不存在的日期"]["event_start"] is None
+    assert (by_content["顺序颠倒"]["event_start"], by_content["顺序颠倒"]["event_end"]) == ("2026-05-01", "2026-05-10")
+    assert (by_content["只有起点"]["event_start"], by_content["只有起点"]["event_end"]) == ("2026-03-02", "2026-03-02")
+    assert (by_content["只有终点"]["event_start"], by_content["只有终点"]["event_end"]) == ("2026-03-03", "2026-03-03")
+
+
+def test_date_tier_finds_memory_by_event_window(conn):
+    """写进 event_start 之后，tier0 的日期路径应该能命中。"""
+    import json as _json
+
+    from companion import recall
+    from companion.provider import FakeProvider
+
+    mid = add_message(conn, "去年年底搬的家")
+    payload = {"memories": [{
+        "content": "用户去年年底搬过一次家。",
+        "source_message_ids": [mid],
+        "event_start": "2025-12-01", "event_end": "2025-12-31",
+    }]}
+    extract.extract_turn(
+        conn, FakeProvider([_json.dumps(payload, ensure_ascii=False)]),
+        user_text="去年年底搬的家", assistant_text="嗯", evidence_ids=[mid], turn_id="t-date3",
+    )
+    from datetime import datetime
+
+    result = recall.recall(conn, "去年年底我干了什么", reference_time=datetime(2026, 11, 4, 21, 0))
+    assert any(h.source == "date_event" for h in result.hits), result.hits
+

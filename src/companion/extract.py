@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -36,10 +37,13 @@ PROMPT = """你在做记忆抽取。只输出一个 JSON 对象，不要解释�
 - epistemic_status: explicit（用户直说）/ confirmed（用户确认了助手的说法）/ inferred（你的推断）
 - 没有可记的就返回空数组。
 - 语汇只在用户给出**特定说法**时记录；kind 只能是 alias / inside_joke / nick_name / taboo。
+- 如果这条事实**带时间**（"去年年底搬的家""三月初开始准备考试"），
+  把它写成 event_start / event_end（YYYY-MM-DD）。只写用户**明确给出**的时间，
+  不要根据"最近""前段时间"去推算具体日期；拿不准就留 null。
 
 输出格式：
 {"memories":[{"content":"...","source_message_ids":[1],"epistemic_status":"explicit",
-"slot_key":null,"valid_from":null}],
+"slot_key":null,"valid_from":null,"event_start":null,"event_end":null}],
 "lexicon":[{"surface":"...","canonical":null,"kind":"inside_joke","meaning":"...",
 "usage_scene":null,"usage_note":null,"confidence":0.8}]}
 """
@@ -60,6 +64,36 @@ def _strip_fences(text: str) -> str:
     text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     return text.strip()
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clean_date(value) -> str | None:
+    """只接受 YYYY-MM-DD；顺手挡掉 2月30日 这类不存在的日期。"""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not _DATE_RE.match(text):
+        return None
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return text
+
+
+def _event_range(item: dict) -> tuple[str | None, str | None]:
+    """事件日期区间：缺一端就补成同一天，end < start 就交换。"""
+    start = _clean_date(item.get("event_start"))
+    end = _clean_date(item.get("event_end"))
+    if start and end and end < start:
+        start, end = end, start
+    if start and not end:
+        end = start
+    if end and not start:
+        start = end
+    return start, end
 
 
 def parse_payload(raw: str) -> tuple[dict, str | None]:
@@ -170,11 +204,13 @@ def extract_turn(
                     "WHERE slot_key=? AND status='active' AND valid_to IS NULL",
                     (now, now, slot_key),
                 )
+            event_start, event_end = _event_range(item)
             cur = conn.execute(
                 "INSERT INTO memory_items "
                 "(content, source, source_role, epistemic_status, evidence_message_ids, "
-                " slot_key, valid_from, message_time, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " slot_key, valid_from, message_time, event_start, event_end, "
+                " created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     content,
                     source,
@@ -184,6 +220,8 @@ def extract_turn(
                     slot_key,
                     _clean(item.get("valid_from"), 20) or None,
                     now,
+                    event_start,
+                    event_end,
                     now,
                     now,
                 ),
@@ -337,4 +375,5 @@ def run_queue(
 # 兼容旧名字（评估与测试里有用到）
 def run_pending(conn: sqlite3.Connection, provider: Provider, *, limit: int = 5) -> list[Outcome]:
     return run_queue(conn, provider, limit=limit)
+
 

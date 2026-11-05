@@ -110,12 +110,12 @@ def test_closing_one_of_two_tabs_keeps_service(live):
     a = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
     b = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
 
-    first = httpx.post(f"{base}/api/bye?page={a}", timeout=10).json()
+    first = httpx.post(f"{base}/api/bye?page={a}", timeout=10, content=b"", headers={"Content-Type": "text/plain"}).json()
     assert first["pages"] == 1
     assert first["stop_in"] is None
     assert app.watchdog.pending_stop_at is None
 
-    last = httpx.post(f"{base}/api/bye?page={b}", timeout=10).json()
+    last = httpx.post(f"{base}/api/bye?page={b}", timeout=10, content=b"", headers={"Content-Type": "text/plain"}).json()
     assert last["pages"] == 0
     assert last["stop_in"] is not None
     assert app.watchdog.pending_stop_at is not None
@@ -133,7 +133,7 @@ def test_ping_keeps_page_alive(live):
 def test_ping_cancels_pending_stop(live):
     base, app = live
     page = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
-    httpx.post(f"{base}/api/bye?page={page}", timeout=10)
+    httpx.post(f"{base}/api/bye?page={page}", timeout=10, content=b"", headers={"Content-Type": "text/plain"})
     assert app.watchdog.pending_stop_at is not None
 
     httpx.get(f"{base}/api/ping?page={page}", timeout=10)
@@ -147,7 +147,7 @@ def test_stale_page_does_not_block_shutdown(live):
     ghost = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
     app.presences._pages[ghost] = 0.0
 
-    payload = httpx.post(f"{base}/api/bye?page={alive}", timeout=10).json()
+    payload = httpx.post(f"{base}/api/bye?page={alive}", timeout=10, content=b"", headers={"Content-Type": "text/plain"}).json()
     assert payload["pages"] == 0
     assert payload["stop_in"] is not None
 
@@ -448,3 +448,51 @@ def test_extract_worker_processes_jobs(live):
             break
         time.sleep(0.3)
     assert status == "done", f"worker 没跑完任务，最终状态 {status}"
+
+
+
+def test_cross_origin_post_is_rejected(live):
+    """别的网页不能借用户的浏览器操作本地服务（CSRF）。"""
+    base, _ = live
+    response = httpx.post(
+        base + "/api/delete",
+        json={"days": ["2026-11-04"]},
+        headers={"Origin": "https://evil.example"},
+        timeout=10,
+    )
+    assert response.status_code == 403
+
+
+def test_same_origin_post_is_allowed(live):
+    base, _ = live
+    host = base.split("://", 1)[1]
+    response = httpx.post(
+        base + "/api/delete",
+        json={"days": ["2026-11-04"]},
+        headers={"Origin": f"http://{host}"},
+        timeout=10,
+    )
+    assert response.status_code == 200
+
+
+def test_text_plain_json_body_is_rejected(live):
+    """text/plain 的跨站 POST 不会触发预检，必须挡掉。"""
+    base, _ = live
+    response = httpx.post(
+        base + "/api/delete",
+        content=b'{"days":["2026-11-04"]}',
+        headers={"Content-Type": "text/plain"},
+        timeout=10,
+    )
+    assert response.status_code == 415
+
+
+def test_bye_accepts_sendbeacon_content_type(live):
+    """sendBeacon 只会发 text/plain，这条必须放行，否则关页面停不掉服务。"""
+    base, _ = live
+    page = httpx.get(base + "/api/hello", timeout=10).json()["page_id"]
+    response = httpx.post(
+        f"{base}/api/bye?page={page}", content=b"",
+        headers={"Content-Type": "text/plain;charset=UTF-8"}, timeout=10,
+    )
+    assert response.status_code == 200
