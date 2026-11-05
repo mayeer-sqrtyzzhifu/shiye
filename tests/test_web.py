@@ -542,3 +542,64 @@ def test_provider_failure_degrades_gracefully(live):
     assert done["reply"]
     assert any(e["type"] == "delta" for e in events)
 
+
+
+def test_lexicon_api_lists_and_promotes(live):
+    """候选只能通过人确认生效；API 要能列出、采纳、忽略。"""
+    base, app = live
+    conn = app.connect()
+    try:
+        conn.execute(
+            "INSERT INTO lexicon_candidate (surface, kind, canonical, meaning, "
+            "occurrence_count, confidence, evidence_message_ids, first_seen, last_seen) "
+            "VALUES ('进厂','inside_joke',NULL,'加班',2,0.8,'[]','2026-11-01','2026-11-02')"
+        )
+        conn.commit()
+        cid = conn.execute("SELECT id FROM lexicon_candidate").fetchone()["id"]
+    finally:
+        conn.close()
+
+    state = httpx.get(base + "/api/lexicon", timeout=10).json()
+    assert [c["surface"] for c in state["pending"]] == ["进厂"]
+    assert state["active"] == []
+
+    promoted = httpx.post(base + "/api/lexicon/promote", json={"id": cid}, timeout=10).json()
+    assert promoted["ok"] is True
+
+    state = httpx.get(base + "/api/lexicon", timeout=10).json()
+    assert state["pending"] == []
+    assert [e["surface"] for e in state["active"]] == ["进厂"]
+
+
+def test_lexicon_reject(live):
+    base, app = live
+    conn = app.connect()
+    try:
+        conn.execute(
+            "INSERT INTO lexicon_candidate (surface, kind, meaning, confidence, "
+            "evidence_message_ids, first_seen, last_seen) "
+            "VALUES ('摸鱼','inside_joke','偷懒',0.3,'[]','2026-11-01','2026-11-02')"
+        )
+        conn.commit()
+        cid = conn.execute("SELECT id FROM lexicon_candidate").fetchone()["id"]
+    finally:
+        conn.close()
+
+    assert httpx.post(base + "/api/lexicon/reject", json={"id": cid}, timeout=10).json()["ok"]
+    assert httpx.get(base + "/api/lexicon", timeout=10).json()["pending"] == []
+
+
+def test_lexicon_promote_unknown_id_is_404(live):
+    base, _ = live
+    response = httpx.post(base + "/api/lexicon/promote", json={"id": 99999}, timeout=10)
+    assert response.status_code == 404
+
+
+def test_index_has_lexicon_panel():
+    """语汇确认入口是 UI 的一部分，别在改样式时弄丢。"""
+    from web.server import INDEX
+
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="btn-lex"' in html
+    assert 'id="lex-panel"' in html
+    assert "loadLexicon" in html

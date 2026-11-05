@@ -25,7 +25,7 @@
 - **评估集与跑批** —— 20 条用例、确定性 + 模型裁判两套判据、硬门禁、基线对比
 - **网页前端 + 生命周期** —— stdlib SSE 流式、页面关掉就自动停
 
-`python -m pytest` → **258 项全绿**，单测不联网。
+`python -m pytest` → **267 项全绿**，单测不联网。
 
 > 规格文档在父目录，**故意不进本仓库**：它是与评审方共享的单一事实源，拷进来就会分叉。
 
@@ -33,7 +33,7 @@
 
 ```powershell
 cd companion
-python -m pytest -p no:cacheprovider   # 258 项，不联网（不落 .pytest_cache）
+python -m pytest -p no:cacheprovider   # 267 项，不联网（不落 .pytest_cache）
 python tools/live_smoke.py            # 真实 API 两轮对话（需要 .env）
 python tools/live_smoke.py --cache    # 附带 prompt cache 门槛扫描
 python eval/run_eval.py               # 评估集（含模型裁判，约 10 次调用）
@@ -221,6 +221,18 @@ tools/                  live_smoke / check_fts / encrypt_db
 eval/run_eval.py        评估集与跑批
 ```
 
+## 语汇（候选 → 确认 → 生效）
+
+用户特有的说法（"进厂"=加班）会被抽取成**候选**，但**_不会自动生效_**。
+理由是这类东西一旦写错，会影响之后每一轮对话；`taboo` 尤其如此。
+
+- 候选存在 `lexicon_candidate`，状态 `pending / promoted / rejected`
+- 人工确认后才写入 `lexicon_entry`（`alias` 会参与查询扩展）
+- 网页侧栏「语汇」按钮打开确认面板：采纳 / 忽略
+- 同一个 surface+kind 再次采纳会更新已有条目，不会撞唯一索引
+
+接口：`GET /api/lexicon`、`POST /api/lexicon/promote`、`POST /api/lexicon/reject`
+
 ## 相关度过滤
 
 检索不做"绝对分数下限"，而是**相对最强命中的比例**（`KEEP_RATIO_*`，默认 0.5）：
@@ -250,6 +262,7 @@ python -m pytest tests/test_recall.py            # 比例常数必须仍然达�
 - 单字查询靠索引侧 unigram 兜住，索引体积约 2 倍。
 - 长期记忆是全局的（单用户本就如此）；`session_id` 只隔离**原始对话窗口**。
 - 时间一律 UTC 存储、本地展示。直接挂 UTC 时间戳会让模型把"晚上"说成"中午"。
+
 
 
 

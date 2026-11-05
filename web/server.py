@@ -35,7 +35,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from companion import db, extract, paths, persona  # noqa: E402
+from companion import db, extract, lexicon, paths, persona  # noqa: E402
 from companion import prompt as prompt_mod  # noqa: E402
 from companion.prompt import format_local_moment, local_datetime  # noqa: E402
 from companion.provider import OpenAICompatProvider, ProviderError  # noqa: E402
@@ -299,6 +299,34 @@ class App:
         finally:
             conn.close()
 
+    def lexicon_state(self) -> dict:
+        conn = self.connect()
+        try:
+            return {
+                "pending": lexicon.list_candidates(conn),
+                "active": lexicon.list_entries(conn),
+            }
+        finally:
+            conn.close()
+
+    def promote_candidate(self, candidate_id: int) -> dict:
+        conn = self.connect()
+        try:
+            with db.tx(conn):
+                entry_id = lexicon.promote(conn, candidate_id)
+            return {"ok": True, "entry_id": entry_id}
+        finally:
+            conn.close()
+
+    def reject_candidate(self, candidate_id: int) -> dict:
+        conn = self.connect()
+        try:
+            with db.tx(conn):
+                lexicon.reject(conn, candidate_id)
+            return {"ok": True}
+        finally:
+            conn.close()
+
     def record_latency(self, first_ms: int, total_ms: int) -> None:
         self._latencies.append((first_ms, total_ms))
 
@@ -369,6 +397,10 @@ class Handler(BaseHTTPRequestHandler):
                 "pages": self.app.presences.count(),
                 "bye_grace": self.app.watchdog.policy.bye_grace,
             })
+            return
+
+        if route == "/api/lexicon":
+            self._json(self.app.lexicon_state())
             return
 
         if route == "/api/days":
@@ -457,6 +489,26 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 print(f"[presence] 一个页面离开，还剩 {remaining} 个")
             self._json({"ok": True, "pages": remaining, "stop_in": stop_in})
+            return
+
+        if route in ("/api/lexicon/promote", "/api/lexicon/reject"):
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError:
+                self._json({"error": "bad json"}, status=400)
+                return
+            raw_id = body.get("id")
+            if not str(raw_id).isdigit():
+                self._json({"error": "bad id"}, status=400)
+                return
+            try:
+                if route.endswith("promote"):
+                    self._json(self.app.promote_candidate(int(raw_id)))
+                else:
+                    self._json(self.app.reject_candidate(int(raw_id)))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, status=404)
             return
 
         if route == "/api/delete":

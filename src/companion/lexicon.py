@@ -109,3 +109,91 @@ def evidence_ids(conn: sqlite3.Connection, lexicon_id: int) -> list[int]:
         return list(json.loads(row["evidence_message_ids"] or "[]"))
     except ValueError:
         return []
+
+
+# ───────────────────────────────────────── 生命周期（候选 → 确认 → 生效）
+
+def list_candidates(
+    conn: sqlite3.Connection, *, status: str = "pending", limit: int = 50
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, surface, kind, canonical, meaning, usage_scene, usage_note, "
+        "       occurrence_count, confidence, evidence_message_ids, first_seen, last_seen "
+        "FROM lexicon_candidate WHERE status = ? ORDER BY occurrence_count DESC, id LIMIT ?",
+        (status, limit),
+    ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["evidence_ids"] = json.loads(item.pop("evidence_message_ids") or "[]")
+        except ValueError:
+            item["evidence_ids"] = []
+        out.append(item)
+    return out
+
+
+def list_entries(conn: sqlite3.Connection, *, status: str = "active") -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, surface, kind, canonical, meaning, use_count, injected_count "
+        "FROM lexicon_entry WHERE status = ? ORDER BY kind, surface",
+        (status,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def promote(conn: sqlite3.Connection, candidate_id: int) -> int:
+    """把候选升格为生效条目，返回 lexicon_entry.id。
+
+    设计上**只做人工确认这一条路**：候选永远不自动生效。
+    taboo 尤其如此——它会常驻稳定前缀，写错一次就会影响所有后续对话。
+    """
+    row = conn.execute(
+        "SELECT * FROM lexicon_candidate WHERE id = ?", (candidate_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"candidate not found: {candidate_id}")
+    if row["status"] != "pending":
+        raise ValueError(f"candidate already {row['status']}")
+
+    surface, kind = row["surface"], row["kind"]
+    existing = conn.execute(
+        "SELECT id FROM lexicon_entry WHERE surface = ? AND kind = ? AND status = 'active'",
+        (surface, kind),
+    ).fetchone()
+
+    if existing:
+        entry_id = int(existing["id"])
+        conn.execute(
+            "UPDATE lexicon_entry SET canonical=COALESCE(?, canonical), meaning=?, "
+            " usage_scene=COALESCE(?, usage_scene), usage_note=COALESCE(?, usage_note), "
+            " confidence=?, evidence_message_ids=? WHERE id=?",
+            (row["canonical"], row["meaning"], row["usage_scene"], row["usage_note"],
+             row["confidence"], row["evidence_message_ids"], entry_id),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO lexicon_entry "
+            "(surface, canonical, kind, meaning, usage_scene, usage_note, confidence, "
+            " first_seen, evidence_message_ids, status) "
+            "VALUES (?,?,?,?,?,?,?,?,?, 'active')",
+            (surface, row["canonical"], kind, row["meaning"], row["usage_scene"],
+             row["usage_note"], row["confidence"], row["first_seen"],
+             row["evidence_message_ids"]),
+        )
+        entry_id = int(cur.lastrowid)
+
+    conn.execute(
+        "UPDATE lexicon_candidate SET status='promoted' WHERE id=?", (candidate_id,)
+    )
+    return entry_id
+
+
+def reject(conn: sqlite3.Connection, candidate_id: int) -> None:
+    cur = conn.execute(
+        "UPDATE lexicon_candidate SET status='rejected' "
+        "WHERE id=? AND status='pending'",
+        (candidate_id,),
+    )
+    if cur.rowcount == 0:
+        raise ValueError(f"candidate not pending: {candidate_id}")

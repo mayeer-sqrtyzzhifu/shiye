@@ -430,3 +430,88 @@ def test_date_tier_finds_memory_by_event_window(conn):
     result = recall.recall(conn, "去年年底我干了什么", reference_time=datetime(2026, 11, 4, 21, 0))
     assert any(h.source == "date_event" for h in result.hits), result.hits
 
+
+
+def test_candidate_is_not_active_until_promoted(conn):
+    """候选永远不自动生效 —— 这是 §1.2 闸门二。"""
+    from companion import lexicon
+
+    conn.execute(
+        "INSERT INTO lexicon_candidate (surface, kind, meaning, occurrence_count, "
+        "confidence, evidence_message_ids, first_seen, last_seen) "
+        "VALUES ('进厂','inside_joke','加班',2,0.8,'[]','2026-11-01','2026-11-02')"
+    )
+    assert lexicon.list_entries(conn) == []
+    assert lexicon.match(conn, "又要进厂了") == ()
+
+
+def test_promote_makes_the_term_usable(conn):
+    from companion import lexicon
+
+    conn.execute(
+        "INSERT INTO lexicon_candidate (surface, kind, canonical, meaning, occurrence_count, "
+        "confidence, evidence_message_ids, first_seen, last_seen) "
+        "VALUES ('搬家','alias','搬了一次家','搬家这件事',3,0.9,'[]','2026-11-01','2026-11-02')"
+    )
+    cid = conn.execute("SELECT id FROM lexicon_candidate").fetchone()["id"]
+
+    entry_id = lexicon.promote(conn, cid)
+    assert entry_id
+
+    matches, query = lexicon.load_for_prompt(conn, "又要搬家了")
+    assert any(m.surface == "搬家" for m in matches)
+    assert "搬了一次家" in query
+    assert conn.execute(
+        "SELECT status FROM lexicon_candidate WHERE id=?", (cid,)
+    ).fetchone()["status"] == "promoted"
+
+
+def test_promote_twice_is_rejected(conn):
+    from companion import lexicon
+
+    conn.execute(
+        "INSERT INTO lexicon_candidate (surface, kind, meaning, confidence, "
+        "evidence_message_ids, first_seen, last_seen) "
+        "VALUES ('进厂','inside_joke','加班',0.8,'[]','2026-11-01','2026-11-02')"
+    )
+    cid = conn.execute("SELECT id FROM lexicon_candidate").fetchone()["id"]
+    lexicon.promote(conn, cid)
+    with pytest.raises(ValueError):
+        lexicon.promote(conn, cid)
+
+
+def test_reject_keeps_it_out_of_pending(conn):
+    from companion import lexicon
+
+    conn.execute(
+        "INSERT INTO lexicon_candidate (surface, kind, meaning, confidence, "
+        "evidence_message_ids, first_seen, last_seen) "
+        "VALUES ('摸鱼','inside_joke','偷懒',0.4,'[]','2026-11-01','2026-11-02')"
+    )
+    cid = conn.execute("SELECT id FROM lexicon_candidate").fetchone()["id"]
+    lexicon.reject(conn, cid)
+    assert lexicon.list_candidates(conn) == []
+    assert conn.execute(
+        "SELECT status FROM lexicon_candidate WHERE id=?", (cid,)
+    ).fetchone()["status"] == "rejected"
+
+
+def test_promoting_an_existing_entry_updates_it(conn):
+    """同一个 surface+kind 再确认一次，应该更新而不是撞唯一索引。"""
+    from companion import lexicon
+
+    for meaning in ("加班", "加班（更累的那种）"):
+        conn.execute(
+            "INSERT INTO lexicon_candidate (surface, kind, meaning, confidence, "
+            "evidence_message_ids, first_seen, last_seen) "
+            "VALUES ('进厂','inside_joke',?,0.8,'[]','2026-11-01','2026-11-02') "
+            "ON CONFLICT(surface, kind) DO UPDATE SET meaning=excluded.meaning, "
+            "status='pending'",
+            (meaning,),
+        )
+        cid = conn.execute("SELECT id FROM lexicon_candidate WHERE surface='进厂'").fetchone()["id"]
+        lexicon.promote(conn, cid)
+
+    entries = lexicon.list_entries(conn)
+    assert len(entries) == 1
+    assert entries[0]["meaning"] == "加班（更累的那种）"

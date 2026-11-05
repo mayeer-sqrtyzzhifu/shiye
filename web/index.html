@@ -112,6 +112,34 @@
   form button:disabled { opacity: .4; cursor: default; }
   .typing::after { content: "▍"; animation: blink 1s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0; } }
+  #lex-panel {
+    position: fixed; inset: 0; background: rgba(0,0,0,.55);
+    display: flex; align-items: center; justify-content: center; z-index: 20;
+  }
+  #lex-panel[hidden] { display: none; }
+  .lex-card {
+    width: min(620px, 92vw); max-height: 80vh; overflow-y: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 20px;
+  }
+  .lex-card h3 { margin: 0 0 4px; font-size: 15px; }
+  .lex-card .hint { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  .lex-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px;
+  }
+  .lex-item .s { font-weight: 600; }
+  .lex-item .k { color: var(--muted); font-size: 11px; }
+  .lex-item .m { flex: 1; color: #c9c9d1; }
+  .lex-item button {
+    padding: 4px 10px; border-radius: 8px; font: inherit; font-size: 12px;
+    border: 1px solid var(--line); background: transparent; color: #c9c9d1; cursor: pointer;
+  }
+  .lex-item button.ok:hover { border-color: var(--accent); color: var(--accent); }
+  .lex-item button.no:hover { border-color: var(--danger); color: var(--danger); }
+  .lex-empty { color: var(--muted); font-size: 12px; padding: 10px 0; }
+  .lex-close { float: right; }
+
   @media (max-width: 760px) { aside { display: none; } }
 </style>
 </head>
@@ -124,6 +152,7 @@
       <button id="btn-today">回到今天</button>
       <button id="btn-view" disabled>查看选中</button>
       <button id="btn-del" class="danger" disabled>删除选中</button>
+      <button id="btn-lex">语汇</button>
     </div>
     <div id="days"></div>
   </aside>
@@ -151,6 +180,17 @@
       <button id="send" type="submit">发送</button>
     </form>
   </main>
+</div>
+
+<div id="lex-panel" hidden>
+  <div class="lex-card">
+    <button id="lex-close" class="lex-close">关闭</button>
+    <h3>语汇</h3>
+    <div class="hint">候选不会自动生效。采纳之后，这些说法才会进入提示。</div>
+    <div id="lex-pending"></div>
+    <h3 style="margin-top:16px">已生效</h3>
+    <div id="lex-active"></div>
+  </div>
 </div>
 
 <script>
@@ -550,6 +590,83 @@ btnSelDel.addEventListener("click", async () => {
   if (!confirm(`删除选中的 ${ids.length} 条消息？不可恢复。`)) return;
   await postDelete({ message_ids: ids });
   setSelectMode(false);
+});
+
+// ── 语汇确认
+const lexPanel = document.getElementById("lex-panel");
+const lexPending = document.getElementById("lex-pending");
+const lexActive = document.getElementById("lex-active");
+
+function lexRow(item, actions) {
+  const row = document.createElement("div");
+  row.className = "lex-item";
+  const s = document.createElement("span");
+  s.className = "s";
+  s.textContent = item.surface;
+  const k = document.createElement("span");
+  k.className = "k";
+  k.textContent = item.kind;
+  const m = document.createElement("span");
+  m.className = "m";
+  m.textContent = item.meaning || item.canonical || "";
+  row.append(s, k, m);
+  for (const [label, cls, fn] of actions) {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    row.appendChild(b);
+  }
+  return row;
+}
+
+async function loadLexicon() {
+  let state = { pending: [], active: [] };
+  try { state = await (await fetch("/api/lexicon", { cache: "no-store" })).json(); } catch (_) {}
+  lexPending.innerHTML = "";
+  if (!state.pending.length) {
+    lexPending.innerHTML = '<div class="lex-empty">没有待确认的候选</div>';
+  } else {
+    for (const item of state.pending) {
+      lexPending.appendChild(lexRow(item, [
+        ["采纳", "ok", () => lexAct("promote", item.id)],
+        ["忽略", "no", () => lexAct("reject", item.id)],
+      ]));
+    }
+  }
+  lexActive.innerHTML = "";
+  if (!state.active.length) {
+    lexActive.innerHTML = '<div class="lex-empty">还没有生效的语汇</div>';
+  } else {
+    for (const item of state.active) {
+      lexActive.appendChild(lexRow(item, []));
+    }
+  }
+}
+
+async function lexAct(action, id) {
+  try {
+    const res = await fetch("/api/lexicon/" + action, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    await loadLexicon();
+  } catch (err) {
+    alert("操作失败：" + err.message);
+  }
+}
+
+document.getElementById("btn-lex").addEventListener("click", () => {
+  lexPanel.hidden = false;
+  loadLexicon();
+});
+document.getElementById("lex-close").addEventListener("click", () => {
+  lexPanel.hidden = true;
+});
+lexPanel.addEventListener("click", (e) => {
+  if (e.target === lexPanel) lexPanel.hidden = true;
 });
 
 // ── 启动
