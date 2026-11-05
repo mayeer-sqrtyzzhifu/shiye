@@ -496,3 +496,49 @@ def test_bye_accepts_sendbeacon_content_type(live):
         headers={"Content-Type": "text/plain;charset=UTF-8"}, timeout=10,
     )
     assert response.status_code == 200
+
+
+def test_done_event_carries_latency(live):
+    base, _ = live
+    events = []
+    with httpx.stream("POST", base + "/api/chat", timeout=30, json={"text": "在吗"}) as r:
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    done = [e for e in events if e["type"] == "done"][0]
+    assert done["first_token_ms"] >= 0
+    assert done["total_ms"] >= done["first_token_ms"]
+
+
+def test_health_reports_latency_after_a_turn(live):
+    base, _ = live
+    with httpx.stream("POST", base + "/api/chat", timeout=30, json={"text": "在吗"}) as r:
+        list(r.iter_lines())
+    health = httpx.get(base + "/api/health", timeout=10).json()
+    assert health["latency"]["samples"] >= 1
+    assert "first_token_p50" in health["latency"]
+
+
+def test_provider_failure_degrades_gracefully(live):
+    """模型连不上时给一句话，而不是把异常栈丢到页面上。"""
+    from companion.provider import ProviderError
+
+    base, app = live
+
+    class BrokenProvider:
+        def stream(self, *args, **kwargs):
+            raise ProviderError("network down", "")
+
+    app.provider_factory = lambda: BrokenProvider()
+    app._provider = None
+
+    events = []
+    with httpx.stream("POST", base + "/api/chat", timeout=30, json={"text": "在吗"}) as r:
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    done = [e for e in events if e["type"] == "done"][0]
+    assert done.get("degraded") is True
+    assert done["reply"]
+    assert any(e["type"] == "delta" for e in events)
+

@@ -21,6 +21,8 @@ import argparse
 import json
 import sys
 import threading
+from collections import deque
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
@@ -36,7 +38,7 @@ for _p in (str(ROOT), str(ROOT / "src")):
 from companion import db, extract, paths, persona  # noqa: E402
 from companion import prompt as prompt_mod  # noqa: E402
 from companion.prompt import format_local_moment, local_datetime  # noqa: E402
-from companion.provider import OpenAICompatProvider  # noqa: E402
+from companion.provider import OpenAICompatProvider, ProviderError  # noqa: E402
 from companion.turn import run_turn  # noqa: E402
 from web.lifecycle import Lifecycle, Presences, Watchdog  # noqa: E402
 
@@ -136,6 +138,7 @@ class App:
         self.watchdog = Watchdog(lifecycle or Lifecycle(), self._on_stop)
         self.presences = Presences(stale_after=(lifecycle or Lifecycle()).idle_timeout)
         self.extract_worker = ExtractWorker(self)
+        self._latencies: deque[tuple[int, int]] = deque(maxlen=50)
 
         conn = self.connect()
         try:
@@ -296,6 +299,22 @@ class App:
         finally:
             conn.close()
 
+    def record_latency(self, first_ms: int, total_ms: int) -> None:
+        self._latencies.append((first_ms, total_ms))
+
+    def latency_stats(self) -> dict:
+        if not self._latencies:
+            return {}
+        firsts = sorted(f for f, _ in self._latencies)
+        totals = sorted(t for _, t in self._latencies)
+        mid = len(firsts) // 2
+        return {
+            "samples": len(firsts),
+            "first_token_p50": firsts[mid],
+            "first_token_p90": firsts[min(len(firsts) - 1, int(len(firsts) * 0.9))],
+            "total_p50": totals[mid],
+        }
+
     def start_extract_worker(self) -> None:
         """恢复上次残留的 running 任务，并启动单 worker。"""
         conn = self.connect()
@@ -373,6 +392,7 @@ class Handler(BaseHTTPRequestHandler):
                 "model": getattr(self.app._provider, "model", None)
                 or os.environ.get("COMPANION_MODEL", "deepseek-flash"),
                 "pages": self.app.presences.count(),
+                "latency": self.app.latency_stats(),
             }
             self._json(payload)
             return
@@ -485,9 +505,13 @@ class Handler(BaseHTTPRequestHandler):
 
         conn = self.app.connect()
         disconnected = False
+        started = time.monotonic()
+        first_delta: list[float] = [0.0]
         try:
             def on_text(chunk: str) -> None:
                 nonlocal disconnected
+                if not first_delta[0]:
+                    first_delta[0] = time.monotonic()
                 if disconnected:
                     return
                 try:
@@ -514,6 +538,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             usage = result.completion.usage
+            total_ms = int((time.monotonic() - started) * 1000)
+            first_ms = int((first_delta[0] - started) * 1000) if first_delta[0] else total_ms
+            self.app.record_latency(first_ms, total_ms)
             self._event({
                 "type": "done",
                 "reply": result.reply,
@@ -522,11 +549,26 @@ class Handler(BaseHTTPRequestHandler):
                 "lexicon_count": len(result.recall.lexicon),
                 "cache_hit": usage.cache_hit_tokens,
                 "prompt_tokens": usage.prompt_tokens,
+                "first_token_ms": first_ms,
+                "total_ms": total_ms,
                 "notes": result.notes,
             })
 
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except ProviderError as exc:
+            # 离线降级：给一句能听的话，而不是把异常栈丢到页面上
+            fallback = "我这边连不上了，等一下再试试？"
+            try:
+                self._event({"type": "delta", "text": fallback})
+                self._event({
+                    "type": "done", "reply": fallback, "risk": 0,
+                    "recall_count": 0, "lexicon_count": 0, "cache_hit": 0,
+                    "prompt_tokens": 0, "degraded": True,
+                    "notes": {"provider_error": f"{type(exc).__name__}: {exc}"[:200]},
+                })
+            except Exception:  # noqa: BLE001
+                pass
         except Exception as exc:  # noqa: BLE001
             try:
                 self._event({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
@@ -645,6 +687,7 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

@@ -78,3 +78,57 @@ def test_default_crisis_resources_are_offline_constants():
     """资源必须是本地常量，不能依赖联网（§5.5）。"""
     assert DEFAULT_CRISIS_RESOURCES
     assert any("12356" in r for r in DEFAULT_CRISIS_RESOURCES)
+
+
+SAMPLE = "你是抑郁症，得吃药才行。"
+
+
+def test_flags_diagnosis():
+    from companion import guard
+
+    scan = guard.scan_output(SAMPLE)
+    assert "diagnosis" in scan.flags
+    assert scan.severity == 2
+
+
+def test_flags_anti_help():
+    from companion import guard
+
+    assert "anti_help" in guard.scan_output("别去看医生，跟我说就行。").flags
+
+
+def test_flags_exclusive_and_guarantee():
+    from companion import guard
+
+    assert "exclusive" in guard.scan_output("只有我懂你。").flags
+    assert "guarantee" in guard.scan_output("我保证不会离开你。").flags
+    assert guard.scan_output("我保证不会离开你。").severity == 1
+
+
+def test_normal_reply_has_no_flags():
+    from companion import guard
+
+    for text in ("听着是真的累。", "嗯。\n\n那我不问了。", "要不要一起想想办法？"):
+        assert guard.scan_output(text).ok, text
+
+
+def test_empty_reply_is_clean():
+    from companion import guard
+
+    assert guard.scan_output("").ok
+    assert guard.scan_output("   ").ok
+
+
+def test_turn_records_output_flags(conn):
+    """扫描结果要进 notes，否则等于没扫。"""
+    from datetime import datetime
+
+    from companion.provider import FakeProvider
+    from companion.turn import run_turn
+
+    result = run_turn(conn, FakeProvider(["你就是抑郁症，别去看医生。"]),
+                      "我最近很难受", persona="你是拾夜。", now=datetime(2026, 11, 4, 21, 0))
+    assert "output_flags" in result.notes
+    assert "diagnosis" in result.notes["output_flags"]
+    assert result.notes.get("output_severity") == "2"
+

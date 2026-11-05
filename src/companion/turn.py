@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import db
+from . import db, guard
 from . import lexicon as lex_mod
 from . import signals as sig_mod
 from .prompt import (
@@ -250,6 +250,13 @@ def run_turn(
         notes["finish_length"] = "达到 max_tokens，正文可能被截断（reasoning 也计入）"
     if not completion.text.strip():
         notes["empty_reply"] = "模型只产出 reasoning，正文为空"
+
+    # 输出侧扫描（§5.3）：不改写，只标记，让人和日志能看见
+    output_scan = guard.scan_output(completion.text)
+    if not output_scan.ok:
+        notes["output_flags"] = output_scan.summary()
+        if output_scan.severity >= 2:
+            notes["output_severity"] = str(output_scan.severity)
 
     persisted = False
     user_message_id = assistant_message_id = None
