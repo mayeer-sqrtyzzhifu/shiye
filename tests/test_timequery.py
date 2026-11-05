@@ -149,3 +149,55 @@ def test_source_time_never_leaks_to_now():
     a = resolve("昨天", reference_time="2026-01-02T00:00:00Z")
     b = resolve("昨天", reference_time="2026-06-15T00:00:00Z")
     assert a.exact.start != b.exact.start
+
+
+def test_month_only_window_does_not_leak_into_next_year():
+    """「12月」应该是 12-01..12-31，不是到次年 11 月底。"""
+    from datetime import datetime
+
+    from companion import timequery
+
+    q = timequery.resolve("12月", reference_time=datetime(2026, 11, 4, 21, 0), profile={})
+    assert [(w.start, w.end) for w in q.windows] == [("2026-12-01", "2026-12-31")]
+
+
+def test_impossible_dates_are_rejected_not_silently_today():
+    """「2月30日」不存在，不能悄悄返回"今天"。"""
+    from datetime import datetime
+
+    from companion import timequery
+
+    ref = datetime(2026, 11, 4, 21, 0)
+    for text in ("2月30日", "2月29日", "2027年2月29日"):
+        q = timequery.resolve(text, reference_time=ref, profile={})
+        assert q.windows == (), f"{text} 不该有窗口"
+        assert q.conf == 0.0, f"{text} 置信度应为 0"
+        assert q.matched == "invalid_date"
+
+
+def test_message_date_path_uses_local_day_bounds(conn):
+    """UTC+8 的「今天」= UTC 昨天的 16:00 到今天 16:00。
+
+    直接把本地日期拼成 "T00:00:00Z" 会错开 8 小时，凌晨的消息就查不到。
+    """
+    from datetime import datetime
+
+    from companion import db, recall
+
+    db.set_profile(conn, "timezone", "Asia/Shanghai")
+    # 本地 2026-11-05 01:00 = UTC 2026-11-04 17:00
+    conn.execute(
+        "INSERT INTO messages (role, content, message_time, created_at, session_id, no_send) "
+        "VALUES ('user','凌晨说的话','2026-11-04T17:00:00Z','2026-11-04T17:00:00Z','s',0)"
+    )
+    conn.commit()
+
+    result = recall.recall(
+        conn, "今天我们聊了什么",
+        reference_time=datetime(2026, 11, 5, 9, 0),
+        profile={"timezone": "Asia/Shanghai"},
+    )
+    ids = [h.id for h in result.hits if h.source == "date_message"]
+    assert ids, "本地凌晨的消息应被算进「今天」"
+
+

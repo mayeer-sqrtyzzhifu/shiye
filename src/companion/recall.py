@@ -89,7 +89,28 @@ def _event_hits(conn: sqlite3.Connection, q: TimeQuery) -> list[Hit]:
     return hits
 
 
-def _message_hits(conn: sqlite3.Connection, q: TimeQuery) -> list[Hit]:
+def _local_range_utc(start_day: str, end_day: str, tz_name: str | None) -> tuple[str, str]:
+    """本地日期区间 → UTC 区间（左闭右开）。
+
+    直接从 "2026-11-04" 拼 "T00:00:00Z" 会把本地日界当成 UTC 日界，
+    对 UTC+8 的用户来说，"今天"会错开 8 小时。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from .prompt import _localize
+
+    start = _localize(datetime.strptime(start_day, "%Y-%m-%d"), tz_name)
+    end = _localize(datetime.strptime(end_day, "%Y-%m-%d"), tz_name) + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (
+        start.astimezone(timezone.utc).strftime(fmt),
+        end.astimezone(timezone.utc).strftime(fmt),
+    )
+
+
+def _message_hits(
+    conn: sqlite3.Connection, q: TimeQuery, tz_name: str | None = None
+) -> list[Hit]:
     """消息轴：「昨天我们聊了什么」查的是说话时间，不是事件时间。"""
     if q.conf < CONF_MID or q.axis not in ("message", "ambiguous") or not q.windows:
         return []
@@ -99,10 +120,10 @@ def _message_hits(conn: sqlite3.Connection, q: TimeQuery) -> list[Hit]:
         rows = conn.execute(
             """
             SELECT id, no_send FROM messages
-            WHERE message_time >= ? AND message_time <= ?
+            WHERE message_time >= ? AND message_time < ?
             ORDER BY message_time DESC
             """,
-            (f"{window.start}T00:00:00Z", f"{window.end}T23:59:59Z"),
+            _local_range_utc(window.start, window.end, tz_name),
         ).fetchall()
         for row in rows:
             if row["id"] in seen:
@@ -163,7 +184,9 @@ def recall(
     tier0: list[Hit] = []
     tier0.extend(_event_hits(conn, query))
     if len(tier0) < TIER0_LIMIT:
-        tier0.extend(_message_hits(conn, query)[: TIER0_LIMIT - len(tier0)])
+        tier0.extend(
+            _message_hits(conn, query, profile.get("timezone"))[: TIER0_LIMIT - len(tier0)]
+        )
 
     # no_send 对所有出网路径一视同仁：tier0 命中的消息也必须离开 hits（§9.2）
     tier0_local = [h for h in tier0 if h.no_send]
@@ -217,6 +240,8 @@ def recall(
                "message": message_slots, "local_only": len(local_only),
                "lexicon": len(lexicon_matches)},
     )
+
+
 
 
 

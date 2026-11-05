@@ -146,7 +146,11 @@ def _year_candidates(month: int, day: int, ref: date) -> list[date]:
         except ValueError:  # 2 月 29 日等
             continue
     candidates.sort(key=lambda d: abs((d - ref).days))
-    return candidates[:2] or [ref]
+    if not candidates:
+        # 2月30日 / 平年2月29日：一个合法年份都没有。
+        # 以前这里 `or [ref]` 会把不存在的日期悄悄当成今天。
+        raise ValueError(f"invalid calendar date: {month}-{day}")
+    return candidates[:2]
 
 
 # ───────────────────────────────────────── 规则：相对日期
@@ -295,7 +299,8 @@ def resolve(
                 anchor = date(y, mo, d)
                 return build(_expand(anchor, 0.95), 0.95, "full_date", m.group(0))
             except ValueError:
-                pass
+                # 2月30日 / 平年2月29日：日期不存在，明确判无效
+                return build([], 0.0, "invalid_date", m.group(0))
 
     # 2) 档案里能解析的专属日期（生日）。必须在相对/年份规则之前，
     #    否则「去年生日」会被"去年"抢走，降级成年度粗窗口。
@@ -321,6 +326,8 @@ def resolve(
                 cands = _year_candidates(mo, d, ref)
             except ValueError:
                 cands = []
+            if not cands:
+                return build([], 0.0, "invalid_date", m.group(0))
             if cands:
                 windows = [TimeWindow(_iso(c), _iso(c), 0.65, "candidate") for c in cands]
                 lo = min(cands) - timedelta(days=7)
@@ -334,7 +341,10 @@ def resolve(
         mo = _cn_int(m.group(1))
         if mo and 1 <= mo <= 12:
             lo = date(ref.year, mo, 1)
-            hi = date(ref.year + (mo == 12), 12 if mo == 12 else mo + 1, 1) - timedelta(days=1)
+            if mo == 12:
+                hi = date(ref.year, 12, 31)
+            else:
+                hi = date(ref.year, mo + 1, 1) - timedelta(days=1)
             return build([_span(lo, hi, 0.55, "coarse")], 0.55, "month_only", m.group(0))
 
     # 6) 只有年份
